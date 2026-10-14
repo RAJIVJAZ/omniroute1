@@ -647,13 +647,11 @@ export function translateNonStreamingResponse(
         message.content = "";
       }
 
-      let finishReason = toString(root.stop_reason, "stop");
-      if (finishReason === "end_turn") finishReason = "stop";
-      if (finishReason === "tool_use") finishReason = "tool_calls";
-      // Streaming claude-to-openai already maps this (convertStopReason). Leaving
-      // the raw spelling here makes a truncated completion look like an unknown
-      // finish to the chat empty-output check.
-      if (finishReason === "max_tokens") finishReason = "length";
+      // Same mapping as the streaming claude-to-openai path (convertStopReason):
+      // refusal -> content_filter, max_tokens and model_context_window_exceeded ->
+      // length, stop_sequence and pause_turn -> stop. A raw spelling here reached
+      // non-OpenAI clients unmapped (a Gemini client saw a refusal as STOP).
+      const finishReason = normalizeOpenAICompatibleFinishReasonString(root.stop_reason, "stop");
 
       const result: JsonRecord = {
         id: `chatcmpl-${toString(root.id, String(Date.now()))}`,
