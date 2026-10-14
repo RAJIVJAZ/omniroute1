@@ -315,6 +315,8 @@ export function createStreamController({
     handleDisconnect: (reason = "client_closed") => {
       if (disconnected) return;
       if (clientTerminalSeen) {
+        // Transfer transport ownership before completion releases the callback.
+        completedToolHandoffDrain?.();
         controller.handleComplete();
         return;
       }
@@ -667,13 +669,15 @@ export function createDisconnectAwareStream(
   let terminalTail = "";
   let clientTerminalSeen = false;
   let bytesWereForwarded = false;
-  let completedToolHandoffDrainStarted = false;
+  let disconnectDrainStarted = false;
 
-  const drainCompletedToolHandoff = () => {
-    if (completedToolHandoffDrainStarted) return;
-    completedToolHandoffDrainStarted = true;
+  const drainAfterDisconnect = () => {
+    if (disconnectDrainStarted) return;
+    disconnectDrainStarted = true;
+    const timeoutReason = clientTerminalSeen
+      ? "terminal_stream_grace_expired"
+      : "completed_tool_handoff_grace_expired";
     const gracePeriodMs = Math.max(0, Number(streamController.clientDisconnectGracePeriodMs) || 0);
-    const timeoutReason = "completed_tool_handoff_grace_expired";
     const timeout = setTimeout(() => {
       streamController.abort();
       void Promise.allSettled([reader.cancel(timeoutReason), writer.abort(timeoutReason)]);
@@ -693,7 +697,7 @@ export function createDisconnectAwareStream(
       }
     })();
   };
-  streamController.registerCompletedToolHandoffDrain?.(drainCompletedToolHandoff);
+  streamController.registerCompletedToolHandoffDrain?.(drainAfterDisconnect);
 
   const noteClientChunk = (chunk: unknown) => {
     if (!(chunk instanceof Uint8Array)) return;
@@ -730,14 +734,10 @@ export function createDisconnectAwareStream(
     {
       async pull(controller) {
         if (!streamController.isConnected()) {
-          // Closing our side alone leaves the upstream body being pulled by the
-          // transform pipe. Cancel it so the provider stops generating for a
-          // client that is gone. Not on a completed stream (clientTerminalSeen)
-          // nor while a completed tool handoff is still draining the reader.
-          if (
-            !clientTerminalSeen &&
-            streamController.shouldDeferCompletedToolHandoff?.() !== true
-          ) {
+          // Cancel a gone client's upstream; a completed terminal stream drains for late usage.
+          if (clientTerminalSeen) {
+            drainAfterDisconnect();
+          } else if (streamController.shouldDeferCompletedToolHandoff?.() !== true) {
             const reason = "client_disconnected";
             void Promise.allSettled([reader.cancel(reason), writer.abort(reason)]);
           }
@@ -801,7 +801,10 @@ export function createDisconnectAwareStream(
           noteClientChunk(value);
         } catch (error) {
           if (!streamController.isConnected()) {
-            reader.cancel(new Error("Downstream disconnected")).catch(() => { });
+            // A started drain owns the reader; cancelling here would drop its late usage.
+            if (!disconnectDrainStarted) {
+              reader.cancel(new Error("Downstream disconnected")).catch(() => {});
+            }
             try {
               controller.close();
             } catch {
@@ -812,7 +815,7 @@ export function createDisconnectAwareStream(
 
           if (clientTerminalSeen) {
             streamController.handleComplete();
-            reader.cancel(new Error("Client terminal seen")).catch(() => { });
+            reader.cancel(new Error("Client terminal seen")).catch(() => {});
             try {
               controller.close();
             } catch {
@@ -849,13 +852,14 @@ export function createDisconnectAwareStream(
       },
 
       async cancel(reason) {
-        const deferCompletedToolHandoff =
-          streamController.shouldDeferCompletedToolHandoff?.() === true;
         if (clientTerminalSeen) {
           streamController.handleComplete();
-        } else {
-          streamController.handleDisconnect(reason || "cancelled");
+          drainAfterDisconnect();
+          return;
         }
+        const deferCompletedToolHandoff =
+          streamController.shouldDeferCompletedToolHandoff?.() === true;
+        streamController.handleDisconnect(reason || "cancelled");
         if (deferCompletedToolHandoff) return;
         await Promise.allSettled([reader.cancel(reason), writer.abort(reason)]);
       },
