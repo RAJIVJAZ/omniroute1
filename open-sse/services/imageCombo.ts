@@ -24,6 +24,10 @@ import { toJsonErrorPayload } from "@/shared/utils/upstreamError";
 import { HTTP_STATUS } from "@omniroute/open-sse/config/constants.ts";
 import { errorResponse } from "@omniroute/open-sse/utils/error.ts";
 import * as logger from "@/sse/utils/logger";
+import { isCodexImagesModel } from "@omniroute/open-sse/handlers/codexImages.ts";
+import { refreshSelectedCodexImageCredentials } from "@/sse/services/selectedCodexImageCredentials";
+import { resolveProxyForConnection } from "@/lib/db/settings";
+import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
 
 /**
  * Caller-facing shape of handleImageGeneration(). The handler is untyped and
@@ -45,6 +49,7 @@ export interface ImageComboDispatchResult {
   data?: unknown;
   status?: number;
   error?: unknown;
+  retryable?: boolean;
 }
 
 /**
@@ -130,6 +135,24 @@ export async function runImageComboTargets<T extends ImageComboTarget>(
       continue;
     }
 
+    if (typeof credentials === "object" && "blockedByKeyPolicy" in credentials) {
+      return {
+        outcome: "terminal",
+        provider,
+        status: 403,
+        error: "Image connection is not allowed by API key policy",
+        fallbackCount,
+      };
+    }
+    if (typeof credentials === "object" && "allExpired" in credentials) {
+      return {
+        outcome: "terminal",
+        provider,
+        status: 401,
+        error: "No usable image account credentials",
+        fallbackCount,
+      };
+    }
     if (isRateLimited(credentials)) {
       lastError = {
         status: 429,
@@ -158,7 +181,7 @@ export async function runImageComboTargets<T extends ImageComboTarget>(
 
     // Terminal failures (400 bad model, 403 banned, etc.) — stop iterating
     // Non-terminal failures (429, 5xx) — try next target
-    if (status === 400 || status === 403 || status === 401) {
+    if (result.retryable === false || status === 400 || status === 403 || status === 401) {
       return { outcome: "terminal", provider, status, error, fallbackCount };
     }
 
@@ -183,7 +206,7 @@ export async function executeImageCombo(
   body: Record<string, unknown>,
   auth: {
     request: Request;
-    policy: { apiKeyInfo?: { id?: string; name?: string } | null };
+    policy: { apiKeyInfo?: { id?: string; name?: string; allowedConnections?: string[] } | null };
   },
   startTime: number,
   log: typeof logger
@@ -221,14 +244,16 @@ export async function executeImageCombo(
   //    /v1/images/edits can reuse the exact same iteration semantics (#12547).
   const run = await runImageComboTargets(imageTargets, {
     resolveProvider: (target) => parseImageModel(target.modelStr),
-    resolveCredentials: (provider) => getProviderCredentialsWithQuotaPreflight(provider),
-    dispatch: async ({ target, credentials }) =>
-      (await handleImageGeneration({
-        body: { ...body, model: target.modelStr },
-        credentials,
-        log,
-        signal: auth.request?.signal || null,
-      })) as ImageGenerationResult,
+    resolveCredentials: (provider, target) =>
+      getProviderCredentialsWithQuotaPreflight(
+        provider,
+        null,
+        auth.policy.apiKeyInfo?.allowedConnections?.length
+          ? auth.policy.apiKeyInfo.allowedConnections
+          : null,
+        target.modelStr
+      ),
+    dispatch: (context) => dispatchImageComboGeneration(context, body, auth.request, log),
     onSuccess: async (credentials) => {
       await clearRecoveredProviderState(credentials as never);
     },
@@ -242,33 +267,7 @@ export async function executeImageCombo(
 
   // 4. Build response
   if (run.outcome === "success") {
-    const selectedProvider = run.provider;
-    const selectedModel = run.model;
-    // handleImageGeneration() already returns the public OpenAI images payload
-    // ({ created, data: [...] }); count the images at that level (#12268).
-    const payload = run.data as { created?: number; data?: unknown[] } | unknown[];
-    const images = Array.isArray(payload) ? payload : payload?.data;
-    const n = Math.max(Number(body.n) || 1, images?.length || 0);
-    const costUsd = await calculateModalCost("image", selectedProvider, selectedModel, { n });
-
-    const headers = new Headers({ "Content-Type": "application/json" });
-    attachOmniRouteMetaHeaders(headers, {
-      provider: selectedProvider,
-      model: selectedModel,
-      costUsd,
-      latencyMs: Date.now() - startTime,
-      requestId: generateRequestId(),
-      strategy: "priority",
-      fallbackAttempts: run.fallbackCount,
-    });
-
-    // Return the handler payload unchanged so the combo path matches the
-    // direct-model path byte-for-byte; re-wrap only if a handler ever yields
-    // a bare array (#12268).
-    const responseBody = Array.isArray(payload)
-      ? { created: Math.floor(Date.now() / 1000), data: payload }
-      : payload;
-    return new Response(JSON.stringify(responseBody), { status: 200, headers });
+    return imageComboSuccessResponse(run, body, startTime);
   }
 
   // All targets failed — return the last error
@@ -280,4 +279,87 @@ export async function executeImageCombo(
     status: run.lastError?.status || 502,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+async function dispatchImageComboGeneration(
+  {
+    target,
+    provider,
+    model,
+    credentials,
+  }: Parameters<RunImageComboTargetsOptions<ImageComboTarget>["dispatch"]>[0],
+  body: Record<string, unknown>,
+  request: Request,
+  log: typeof logger
+): Promise<ImageComboDispatchResult> {
+  if (provider !== "codex" || !isCodexImagesModel(model)) {
+    return (await handleImageGeneration({
+      body: { ...body, model: target.modelStr },
+      credentials,
+      log,
+      signal: request?.signal || null,
+    })) as ImageGenerationResult;
+  }
+  const refreshed = await refreshSelectedCodexImageCredentials(credentials, request.signal);
+  if (refreshed.success === false) return refreshed;
+  const selected = refreshed.credentials;
+  try {
+    const proxyInfo = selected.connectionId
+      ? await resolveProxyForConnection(selected.connectionId)
+      : null;
+    const result = await runWithProxyContext(proxyInfo?.proxy || null, () =>
+      handleImageGeneration({
+        body: { ...body, model: target.modelStr },
+        credentials: selected,
+        log,
+        signal: request.signal,
+      })
+    );
+    return normalizeImageComboDispatchResult(result);
+  } catch {
+    return {
+      success: false,
+      status: 503,
+      error: "Codex Images combo transport failed; do not resubmit an unknown outcome",
+      retryable: false,
+    };
+  }
+}
+
+function normalizeImageComboDispatchResult(
+  result: Awaited<ReturnType<typeof handleImageGeneration>>
+): ImageComboDispatchResult {
+  return {
+    success: result.success,
+    data: "data" in result ? result.data : undefined,
+    status: "status" in result ? result.status : undefined,
+    error: "error" in result ? result.error : undefined,
+    retryable: "retryable" in result ? result.retryable : undefined,
+  };
+}
+
+async function imageComboSuccessResponse(
+  run: Extract<RunImageComboTargetsResult, { outcome: "success" }>,
+  body: Record<string, unknown>,
+  startTime: number
+): Promise<Response> {
+  const payload = run.data as { created?: number; data?: unknown[] } | unknown[];
+  const images = Array.isArray(payload) ? payload : payload?.data;
+  const n = Math.max(Number(body.n) || 1, images?.length || 0);
+  const costUsd = await calculateModalCost("image", run.provider, run.model, { n });
+  const headers = new Headers({ "Content-Type": "application/json" });
+  attachOmniRouteMetaHeaders(headers, {
+    provider: run.provider,
+    model: run.model,
+    costUsd,
+    latencyMs: Date.now() - startTime,
+    requestId: generateRequestId(),
+    strategy: "priority",
+    fallbackAttempts: run.fallbackCount,
+  });
+  // Keep the public handler payload; only a legacy bare array requires wrapping (#12268).
+  const responseBody = Array.isArray(payload)
+    ? { created: Math.floor(Date.now() / 1000), data: payload }
+    : payload;
+  return new Response(JSON.stringify(responseBody), { status: 200, headers });
 }
