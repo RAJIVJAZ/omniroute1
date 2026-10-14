@@ -9,9 +9,10 @@
  * Expiry: 24 hours after sync.
  */
 
-import { BaseSync, BaseSyncConfig } from "../baseSync";
+import { IntelligenceSync } from "./sharedSync";
 import { transformModelgrep } from "../transforms/modelgrep";
-import { bulkUpsertModelIntelligence, deleteExpiredIntelligence, getLatestSyncedAt, applyArenaEloRefresh } from "@/lib/db/modelIntelligence";
+import type { ModelIntelligenceEntry } from "@/lib/db/modelIntelligence";
+import { getLatestSyncedAt, applyArenaEloRefresh } from "@/lib/db/modelIntelligence";
 
 /** Modelgrep API response entry shape. */
 export interface ModelgrepEntry {
@@ -37,17 +38,14 @@ export interface SyncResult {
 /** Modelgrep API base URL (env-overridable for tests/staging). */
 const MODELGREP_API_BASE = (typeof process !== "undefined" && process.env.MODELGREP_API_BASE) || "https://api.modelgrep.dev/v1/benchmark";
 
-/** Default sync schedule: daily at 06:00 UTC. */
-const SCHEDULE_CRON = "0 6 * * *";
-
 /** Default sync interval in ms (24h). */
 const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** Backoff on failure: 6h (interval/4). */
 const BACKOFF_MS = DEFAULT_INTERVAL_MS / 4;
 
-/** Intelligence entry expiry: 24 hours after sync. */
-const EXPIRY_DAYS = 1;
+/** Default sync schedule: daily at 06:00 UTC. */
+const SCHEDULE_CRON = "0 6 * * *";
 
 const KV_NAMESPACE = "modelgrep_intel";
 const KV_LAST_FAILED_KEY = "lastFailedAt";
@@ -64,42 +62,6 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function readKvTimestamp(key: string): Promise<number | null> {
-  try {
-    const { getDbInstance } = await import("@/lib/db/core");
-    const row = getDbInstance()
-      .prepare(`SELECT value FROM key_value WHERE namespace = ? AND key = ? LIMIT 1`)
-      .get(KV_NAMESPACE, key) as { value: string } | undefined;
-    if (!row?.value) return null;
-    const ts = Date.parse(row.value);
-    return Number.isFinite(ts) ? ts : null;
-  } catch {
-    return null;
-  }
-}
-
-async function writeKvTimestamp(key: string, ts: number): Promise<void> {
-  try {
-    const { getDbInstance } = await import("@/lib/db/core");
-    getDbInstance()
-      .prepare(`INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)`)
-      .run(KV_NAMESPACE, key, new Date(ts).toISOString());
-  } catch (err) {
-    console.warn(`[MODELGREP_SYNC] Failed to persist ${key}: ${getErrorMessage(err)}`);
-  }
-}
-
-async function clearKvTimestamp(key: string): Promise<void> {
-  try {
-    const { getDbInstance } = await import("@/lib/db/core");
-    getDbInstance()
-      .prepare(`DELETE FROM key_value WHERE namespace = ? AND key = ?`)
-      .run(KV_NAMESPACE, key);
-  } catch {
-    // Swallow: a stuck KV row only costs one redundant fetch later.
-  }
-}
-
 async function getEffectiveModelgrepSyncEnabled(): Promise<boolean> {
   try {
     const { isFeatureFlagEnabled } = await import("@/shared/utils/featureFlags");
@@ -112,15 +74,12 @@ async function getEffectiveModelgrepSyncEnabled(): Promise<boolean> {
   }
 }
 
-const baseConfig: BaseSyncConfig = {
-  source: "modelgrep_intel",
-  namespace: KV_NAMESPACE,
-  backoffMs: BACKOFF_MS,
-};
-
-export class ModelgrepSync extends BaseSync {
+/**
+ * Modelgrep sync implementation.
+ */
+export class ModelgrepSync extends IntelligenceSync<ModelgrepResponse, ModelgrepEntry> {
   constructor() {
-    super(baseConfig);
+    super("modelgrep_intel", KV_NAMESPACE, BACKOFF_MS);
   }
 
   /** Fetch modelgrep benchmark snapshot from API. */
@@ -141,6 +100,16 @@ export class ModelgrepSync extends BaseSync {
         `Modelgrep API returned invalid JSON (${text.slice(0, 100)}...)`
       );
     }
+  }
+
+  /** Transform fetched response into normalized entries. */
+  transform(response: ModelgrepResponse): Array<Omit<ModelIntelligenceEntry, "syncedAt">> {
+    return transformModelgrep(response.models);
+  }
+
+  /** Determine if this sync is enabled. */
+  async getEnabled(): Promise<boolean> {
+    return getEffectiveModelgrepSyncEnabled();
   }
 
   /** Execute one sync cycle. */
@@ -175,7 +144,7 @@ export class ModelgrepSync extends BaseSync {
           }
         }
 
-        const failedAt = await readKvTimestamp(KV_LAST_FAILED_KEY);
+        const failedAt = await this.readTimestamp(KV_LAST_FAILED_KEY);
         if (failedAt !== null && Date.now() - failedAt < BACKOFF_MS) {
           return {
             success: false,
@@ -187,12 +156,12 @@ export class ModelgrepSync extends BaseSync {
       }
 
       const data = await this.fetch();
-      const entries = transformModelgrep(data.models);
+      const entries = this.transform(data);
 
       if (!dryRun && entries.length > 0) {
         try {
           await applyArenaEloRefresh(entries, "modelgrep_intel");
-          await clearKvTimestamp(KV_LAST_FAILED_KEY);
+          await this.clearTimestamp(KV_LAST_FAILED_KEY);
         } catch (err) {
           const message = getErrorMessage(err);
           console.warn(`[MODELGREP_SYNC] Failed to apply intelligence refresh: ${message}`);
@@ -209,7 +178,7 @@ export class ModelgrepSync extends BaseSync {
       if (!dryRun) {
         lastSyncTime = new Date().toISOString();
         lastSyncModelCount = entries.length;
-        await writeKvTimestamp(KV_LAST_SYNC_KEY, Date.now());
+        await this.writeTimestamp(KV_LAST_SYNC_KEY, Date.now());
       }
 
       const countLabel = dryRun ? "would sync" : "synced";
@@ -227,7 +196,7 @@ export class ModelgrepSync extends BaseSync {
       const message = getErrorMessage(err);
       console.warn("[MODELGREP_SYNC] Sync failed:", message);
       if (!dryRun) {
-        await writeKvTimestamp(KV_LAST_FAILED_KEY, Date.now());
+        await this.writeTimestamp(KV_LAST_FAILED_KEY, Date.now());
       }
       this.recordFailure(err);
       return {
@@ -243,7 +212,7 @@ export class ModelgrepSync extends BaseSync {
 
   /** Get current sync status. */
   async getStatus() {
-    const enabled = await getEffectiveModelgrepSyncEnabled();
+    const enabled = await this.getEnabled();
     return {
       enabled,
       lastSync: lastSyncTime,

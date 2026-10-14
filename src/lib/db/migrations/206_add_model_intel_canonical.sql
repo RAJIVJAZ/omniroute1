@@ -1,4 +1,4 @@
--- 098_add_model_intel_canonical.sql
+-- 206_add_model_intel_canonical.sql
 -- Add canonicalization columns to model_intelligence for cross-source ID mapping
 --
 -- Replay safety: bare ALTER TABLE ADD COLUMN statements are replayed via the
@@ -12,5 +12,5 @@ ALTER TABLE model_intelligence ADD COLUMN match_confidence REAL;
 CREATE INDEX IF NOT EXISTS idx_mi_canonical_id ON model_intelligence (canonical_id);
 CREATE INDEX IF NOT EXISTS idx_mi_source_id ON model_intelligence (source_id);
 
--- Backfill: rows written before 098 carry NULL canonical_id; default to lower(model).
+-- Backfill: rows written before 206 carry NULL canonical_id; default to lower(model).
 UPDATE model_intelligence SET canonical_id = lower(model) WHERE canonical_id IS NULL;

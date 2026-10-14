@@ -9,8 +9,9 @@
  * Expiry: 7 days after sync (consistent with arena_elo).
  */
 
-import { BaseSync, BaseSyncConfig } from "../baseSync";
+import { IntelligenceSync } from "./sharedSync";
 import { transformArenaExternal } from "../transforms/arenaExternal";
+import type { ModelIntelligenceEntry } from "@/lib/db/modelIntelligence";
 import { getLatestSyncedAt, applyArenaEloRefresh } from "@/lib/db/modelIntelligence";
 
 /** Arena external API response entry shape. */
@@ -39,17 +40,14 @@ export interface SyncResult {
 /** Arena external API base URL (env-overridable for tests/staging). */
 const ARENA_EXTERNAL_API_BASE = process.env.ARENA_EXTERNAL_API_BASE || "https://api.arena.ai/v1/external";
 
-/** Default sync schedule: daily at 03:00 UTC. */
-const SCHEDULE_CRON = "0 3 * * *";
-
 /** Default sync interval in ms (24h). */
 const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** Backoff on failure: 6h (interval/4). */
 const BACKOFF_MS = DEFAULT_INTERVAL_MS / 4;
 
-/** Intelligence entry expiry: 7 days after sync. */
-const EXPIRY_DAYS = 7;
+/** Default sync schedule: daily at 03:00 UTC. */
+const SCHEDULE_CRON = "0 3 * * *";
 
 const KV_NAMESPACE = "arena_elo_external";
 const KV_LAST_FAILED_KEY = "lastFailedAt";
@@ -66,42 +64,6 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function readKvTimestamp(key: string): Promise<number | null> {
-  try {
-    const { getDbInstance } = await import("@/lib/db/core");
-    const row = getDbInstance()
-      .prepare(`SELECT value FROM key_value WHERE namespace = ? AND key = ? LIMIT 1`)
-      .get(KV_NAMESPACE, key) as { value: string } | undefined;
-    if (!row?.value) return null;
-    const ts = Date.parse(row.value);
-    return Number.isFinite(ts) ? ts : null;
-  } catch {
-    return null;
-  }
-}
-
-async function writeKvTimestamp(key: string, ts: number): Promise<void> {
-  try {
-    const { getDbInstance } = await import("@/lib/db/core");
-    getDbInstance()
-      .prepare(`INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)`)
-      .run(KV_NAMESPACE, key, new Date(ts).toISOString());
-  } catch (err) {
-    console.warn(`[ARENA_EXTERNAL_SYNC] Failed to persist ${key}: ${getErrorMessage(err)}`);
-  }
-}
-
-async function clearKvTimestamp(key: string): Promise<void> {
-  try {
-    const { getDbInstance } = await import("@/lib/db/core");
-    getDbInstance()
-      .prepare(`DELETE FROM key_value WHERE namespace = ? AND key = ?`)
-      .run(KV_NAMESPACE, key);
-  } catch {
-    // Swallow: a stuck KV row only costs one redundant fetch later.
-  }
-}
-
 async function getEffectiveArenaExternalSyncEnabled(): Promise<boolean> {
   try {
     const { isFeatureFlagEnabled } = await import("@/shared/utils/featureFlags");
@@ -114,15 +76,12 @@ async function getEffectiveArenaExternalSyncEnabled(): Promise<boolean> {
   }
 }
 
-const baseConfig: BaseSyncConfig = {
-  source: "arena_elo_external",
-  namespace: KV_NAMESPACE,
-  backoffMs: BACKOFF_MS,
-};
-
-export class ArenaExternalSync extends BaseSync {
+/**
+ * ArenaExternal sync implementation.
+ */
+export class ArenaExternalSync extends IntelligenceSync<ArenaExternalResponse, ArenaExtEntry> {
   constructor() {
-    super(baseConfig);
+    super("arena_elo_external", KV_NAMESPACE, BACKOFF_MS);
   }
 
   /** Fetch external Arena leaderboard snapshot from API. */
@@ -145,6 +104,16 @@ export class ArenaExternalSync extends BaseSync {
     }
   }
 
+  /** Transform fetched response into normalized entries. */
+  transform(response: ArenaExternalResponse): Array<Omit<ModelIntelligenceEntry, "syncedAt">> {
+    return transformArenaExternal(response.models);
+  }
+
+  /** Determine if this sync is enabled. */
+  async getEnabled(): Promise<boolean> {
+    return getEffectiveArenaExternalSyncEnabled();
+  }
+
   /** Execute one sync cycle. */
   async sync(dryRun = false): Promise<SyncResult> {
     if (syncInProgress) {
@@ -158,7 +127,6 @@ export class ArenaExternalSync extends BaseSync {
     syncInProgress = true;
 
     try {
-      // Backup DB before first sync
       if (!firstSyncDone && !dryRun) {
         const { backupDbFile } = await import("@/lib/db/backup");
         backupDbFile("pre-arena-external-sync");
@@ -166,7 +134,6 @@ export class ArenaExternalSync extends BaseSync {
       }
 
       if (!dryRun) {
-        // Freshness guard: skip if synced within interval
         const latest = await getLatestSyncedAt("arena_elo_external");
         if (latest) {
           const age = Date.now() - Date.parse(latest);
@@ -179,8 +146,7 @@ export class ArenaExternalSync extends BaseSync {
           }
         }
 
-        // Failure backoff
-        const failedAt = await readKvTimestamp(KV_LAST_FAILED_KEY);
+        const failedAt = await this.readTimestamp(KV_LAST_FAILED_KEY);
         if (failedAt !== null && Date.now() - failedAt < BACKOFF_MS) {
           return {
             success: false,
@@ -191,15 +157,13 @@ export class ArenaExternalSync extends BaseSync {
         }
       }
 
-      // Fetch FIRST — failed fetch must never mutate stored intelligence
       const data = await this.fetch();
-      const entries = transformArenaExternal(data.models);
+      const entries = this.transform(data);
 
       if (!dryRun && entries.length > 0) {
         try {
-          // Atomic replace for this source
           await applyArenaEloRefresh(entries, "arena_elo_external");
-          await clearKvTimestamp(KV_LAST_FAILED_KEY);
+          await this.clearTimestamp(KV_LAST_FAILED_KEY);
         } catch (err) {
           const message = getErrorMessage(err);
           console.warn(`[ARENA_EXTERNAL_SYNC] Failed to apply intelligence refresh: ${message}`);
@@ -216,7 +180,7 @@ export class ArenaExternalSync extends BaseSync {
       if (!dryRun) {
         lastSyncTime = new Date().toISOString();
         lastSyncModelCount = entries.length;
-        await writeKvTimestamp(KV_LAST_SYNC_KEY, Date.now());
+        await this.writeTimestamp(KV_LAST_SYNC_KEY, Date.now());
       }
 
       const countLabel = dryRun ? "would sync" : "synced";
@@ -234,7 +198,7 @@ export class ArenaExternalSync extends BaseSync {
       const message = getErrorMessage(err);
       console.warn("[ARENA_EXTERNAL_SYNC] Sync failed:", message);
       if (!dryRun) {
-        await writeKvTimestamp(KV_LAST_FAILED_KEY, Date.now());
+        await this.writeTimestamp(KV_LAST_FAILED_KEY, Date.now());
       }
       this.recordFailure(err);
       return {
@@ -250,7 +214,7 @@ export class ArenaExternalSync extends BaseSync {
 
   /** Get current sync status. */
   async getStatus() {
-    const enabled = await getEffectiveArenaExternalSyncEnabled();
+    const enabled = await this.getEnabled();
     return {
       enabled,
       lastSync: lastSyncTime,
@@ -278,7 +242,7 @@ export function startPeriodicSync(intervalMs?: number): void {
   // Initial sync (non-blocking)
   arenaExternalSync.sync().catch((err) => {
     console.warn(
-      "[ARENA_EXTERNAL_SYNC] Initial sync error:",
+      `[ARENA_EXTERNAL_SYNC] Initial sync error:`,
       err instanceof Error ? err.message : err
     );
   });
@@ -293,7 +257,7 @@ export function startPeriodicSync(intervalMs?: number): void {
       })
       .catch((err) => {
         console.warn(
-          "[ARENA_EXTERNAL_SYNC] Periodic sync error:",
+          `[ARENA_EXTERNAL_SYNC] Periodic sync error:`,
           err instanceof Error ? err.message : err
         );
       });
@@ -318,7 +282,7 @@ export async function initArenaExternalSync(): Promise<boolean> {
   const enabled = await getEffectiveArenaExternalSyncEnabled();
   if (!enabled) {
     console.log(
-      "[ARENA_EXTERNAL_SYNC] Disabled by feature flag. Set MODEL_INTEL_ARENA_EXTERNAL_ENABLED=true to enable."
+      `[ARENA_EXTERNAL_SYNC] Disabled by feature flag. Set MODEL_INTEL_ARENA_EXTERNAL_ENABLED=true to enable.`
     );
     return false;
   }

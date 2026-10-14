@@ -7,7 +7,7 @@
  * and the TS resolution chain in taskFitness.ts.
  *
  * @see Migration 097_model_intelligence.sql
- * @see Migration 098_add_model_intel_canonical.sql
+ * @see Migration 206_add_model_intel_canonical.sql
  */
 
 import { getDbInstance, rowToCamel } from "./core";

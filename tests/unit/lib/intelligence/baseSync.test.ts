@@ -111,7 +111,10 @@ describe("BaseSync - circuit breaker transitions", () => {
       namespace: "ns",
       backoffMs: 1000,
       failureThreshold: 1,
-      resetTimeoutMs: 1,
+      // 100ms (not 1ms): open() performs a synchronous KV write after setting
+      // openedAt, so a 1ms threshold races the write latency and flakes.
+      // 300ms wait keeps both assertions deterministic.
+      resetTimeoutMs: 100,
     });
     sync.recordFailure(new Error("fail"));
     return new Promise((resolve) => {
@@ -120,7 +123,7 @@ describe("BaseSync - circuit breaker transitions", () => {
         sync.recordFailure(new Error("fail again"));
         assert.strictEqual(sync.canAttempt(), false); // back to open
         resolve(undefined);
-      }, 5);
+      }, 300);
     });
   });
 

@@ -9,8 +9,9 @@
  * Expiry: 24 hours after sync.
  */
 
-import { BaseSync, BaseSyncConfig } from "../baseSync";
+import { IntelligenceSync } from "./sharedSync";
 import { transformPublicAI } from "../transforms/publicai";
+import type { ModelIntelligenceEntry } from "@/lib/db/modelIntelligence";
 import { getLatestSyncedAt, applyArenaEloRefresh } from "@/lib/db/modelIntelligence";
 
 /** PublicAI API response entry shape. */
@@ -38,17 +39,14 @@ export interface SyncResult {
 /** PublicAI API base URL (env-overridable for tests/staging). */
 const PUBLICAI_API_BASE = process.env.PUBLICAI_API_BASE || "https://api.publicai.io/v1/models";
 
-/** Default sync schedule: daily at 09:00 UTC. */
-const SCHEDULE_CRON = "0 9 * * *";
-
 /** Default sync interval in ms (24h). */
 const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 /** Backoff on failure: 6h (interval/4). */
 const BACKOFF_MS = DEFAULT_INTERVAL_MS / 4;
 
-/** Intelligence entry expiry: 24 hours after sync. */
-const EXPIRY_DAYS = 1;
+/** Default sync schedule: daily at 09:00 UTC. */
+const SCHEDULE_CRON = "0 9 * * *";
 
 const KV_NAMESPACE = "publicai_index";
 const KV_LAST_FAILED_KEY = "lastFailedAt";
@@ -65,42 +63,6 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function readKvTimestamp(key: string): Promise<number | null> {
-  try {
-    const { getDbInstance } = await import("@/lib/db/core");
-    const row = getDbInstance()
-      .prepare(`SELECT value FROM key_value WHERE namespace = ? AND key = ? LIMIT 1`)
-      .get(KV_NAMESPACE, key) as { value: string } | undefined;
-    if (!row?.value) return null;
-    const ts = Date.parse(row.value);
-    return Number.isFinite(ts) ? ts : null;
-  } catch {
-    return null;
-  }
-}
-
-async function writeKvTimestamp(key: string, ts: number): Promise<void> {
-  try {
-    const { getDbInstance } = await import("@/lib/db/core");
-    getDbInstance()
-      .prepare(`INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)`)
-      .run(KV_NAMESPACE, key, new Date(ts).toISOString());
-  } catch (err) {
-    console.warn(`[PUBLICAI_SYNC] Failed to persist ${key}: ${getErrorMessage(err)}`);
-  }
-}
-
-async function clearKvTimestamp(key: string): Promise<void> {
-  try {
-    const { getDbInstance } = await import("@/lib/db/core");
-    getDbInstance()
-      .prepare(`DELETE FROM key_value WHERE namespace = ? AND key = ?`)
-      .run(KV_NAMESPACE, key);
-  } catch {
-    // Swallow: a stuck KV row only costs one redundant fetch later.
-  }
-}
-
 async function getEffectivePublicaiSyncEnabled(): Promise<boolean> {
   try {
     const { isFeatureFlagEnabled } = await import("@/shared/utils/featureFlags");
@@ -113,15 +75,12 @@ async function getEffectivePublicaiSyncEnabled(): Promise<boolean> {
   }
 }
 
-const baseConfig: BaseSyncConfig = {
-  source: "publicai_index",
-  namespace: KV_NAMESPACE,
-  backoffMs: BACKOFF_MS,
-};
-
-export class PublicaiSync extends BaseSync {
+/**
+ * PublicAI sync implementation.
+ */
+export class PublicaiSync extends IntelligenceSync<PublicAIResponse, PublicAIEntry> {
   constructor() {
-    super(baseConfig);
+    super("publicai_index", KV_NAMESPACE, BACKOFF_MS);
   }
 
   /** Fetch PublicAI index snapshot from API. */
@@ -144,6 +103,16 @@ export class PublicaiSync extends BaseSync {
     }
   }
 
+  /** Transform fetched response into normalized entries. */
+  transform(response: PublicAIResponse): Array<Omit<ModelIntelligenceEntry, "syncedAt">> {
+    return transformPublicAI(response.models);
+  }
+
+  /** Determine if this sync is enabled. */
+  async getEnabled(): Promise<boolean> {
+    return getEffectivePublicaiSyncEnabled();
+  }
+
   /** Execute one sync cycle. */
   async sync(dryRun = false): Promise<SyncResult> {
     if (syncInProgress) {
@@ -157,7 +126,6 @@ export class PublicaiSync extends BaseSync {
     syncInProgress = true;
 
     try {
-      // Backup DB before first sync
       if (!firstSyncDone && !dryRun) {
         const { backupDbFile } = await import("@/lib/db/backup");
         backupDbFile("pre-publicai-sync");
@@ -165,7 +133,6 @@ export class PublicaiSync extends BaseSync {
       }
 
       if (!dryRun) {
-        // Freshness guard: skip if synced within interval
         const latest = await getLatestSyncedAt("publicai_index");
         if (latest) {
           const age = Date.now() - Date.parse(latest);
@@ -178,8 +145,7 @@ export class PublicaiSync extends BaseSync {
           }
         }
 
-        // Failure backoff
-        const failedAt = await readKvTimestamp(KV_LAST_FAILED_KEY);
+        const failedAt = await this.readTimestamp(KV_LAST_FAILED_KEY);
         if (failedAt !== null && Date.now() - failedAt < BACKOFF_MS) {
           return {
             success: false,
@@ -190,15 +156,13 @@ export class PublicaiSync extends BaseSync {
         }
       }
 
-      // Fetch FIRST — failed fetch must never mutate stored intelligence
       const data = await this.fetch();
-      const entries = transformPublicAI(data.models);
+      const entries = this.transform(data);
 
       if (!dryRun && entries.length > 0) {
         try {
-          // Atomic replace for this source
           await applyArenaEloRefresh(entries, "publicai_index");
-          await clearKvTimestamp(KV_LAST_FAILED_KEY);
+          await this.clearTimestamp(KV_LAST_FAILED_KEY);
         } catch (err) {
           const message = getErrorMessage(err);
           console.warn(`[PUBLICAI_SYNC] Failed to apply intelligence refresh: ${message}`);
@@ -215,7 +179,7 @@ export class PublicaiSync extends BaseSync {
       if (!dryRun) {
         lastSyncTime = new Date().toISOString();
         lastSyncModelCount = entries.length;
-        await writeKvTimestamp(KV_LAST_SYNC_KEY, Date.now());
+        await this.writeTimestamp(KV_LAST_SYNC_KEY, Date.now());
       }
 
       const countLabel = dryRun ? "would sync" : "synced";
@@ -233,7 +197,7 @@ export class PublicaiSync extends BaseSync {
       const message = getErrorMessage(err);
       console.warn("[PUBLICAI_SYNC] Sync failed:", message);
       if (!dryRun) {
-        await writeKvTimestamp(KV_LAST_FAILED_KEY, Date.now());
+        await this.writeTimestamp(KV_LAST_FAILED_KEY, Date.now());
       }
       this.recordFailure(err);
       return {
@@ -249,7 +213,7 @@ export class PublicaiSync extends BaseSync {
 
   /** Get current sync status. */
   async getStatus() {
-    const enabled = await getEffectivePublicaiSyncEnabled();
+    const enabled = await this.getEnabled();
     return {
       enabled,
       lastSync: lastSyncTime,

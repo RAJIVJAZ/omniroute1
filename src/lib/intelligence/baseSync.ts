@@ -7,37 +7,31 @@
  * with arenaEloSync's lastFailedAt pattern.
  */
 
-import { getDbInstance } from "@/lib/db/core";
+import { deleteKv, readKv, writeKv } from "@/lib/db/kv";
+
+export { deleteKv, readKv, writeKv };
 
 export interface CircuitState {
-  state: "closed" | "open" | "half-open";
-  failures: number;
-  successes: number;
-  lastFailureAt: number | null;
-  lastSuccessAt: number | null;
-  openedAt: number | null;
-  flaps: number;
+	state: "closed" | "open" | "half-open";
+	failures: number;
+	successes: number;
+	lastFailureAt: number | null;
+	lastSuccessAt: number | null;
+	openedAt: number | null;
+	flaps: number;
 }
 
 export interface BaseSyncConfig {
-  source: string;
-  namespace: string;
-  backoffMs: number;
-  failureThreshold?: number;
-  successThreshold?: number;
-  windowMs?: number;
-  resetTimeoutMs?: number;
-  minBackoffMs?: number;
-  maxBackoffMs?: number;
+	source: string;
+	namespace: string;
+	backoffMs: number;
+	failureThreshold?: number;
+	successThreshold?: number;
+	windowMs?: number;
+	resetTimeoutMs?: number;
+	minBackoffMs?: number;
+	maxBackoffMs?: number;
 }
-
-const KV_READ_SQL = `SELECT value FROM key_value WHERE namespace = ? AND key = ? LIMIT 1`;
-const KV_WRITE_SQL = `INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)`;
-const KV_DELETE_SQL = `DELETE FROM key_value WHERE namespace = ? AND key = ?`;
-
-// TODO(2.2): this KV layer duplicates arenaEloSync.ts:177-212
-// (KV_READ_SQL/KV_WRITE_SQL/getDbInstance().prepare(...)). Extract db/kv.ts
-// once and import it from both — kept inline here to keep this unit scoped.
 
 /**
  * Default circuit-breaker/backoff tuning (audit 3.5). Effective values are
@@ -59,204 +53,173 @@ const MAX_BACKOFF_MULTIPLIER = 4;
 const CIRCUIT_STATE_KEY = "circuit";
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+	return error instanceof Error ? error.message : String(error);
 }
 
 const CIRCUIT_STATES = ["closed", "open", "half-open"];
 
 function isFiniteNumberOrNull(value: unknown): value is number | null {
-  return value === null || (typeof value === "number" && Number.isFinite(value));
+	return value === null || (typeof value === "number" && Number.isFinite(value));
 }
 
 function isCircuitState(value: unknown): value is CircuitState {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  const state = v["state"];
-  if (typeof state !== "string" || !CIRCUIT_STATES.includes(state)) return false;
-  return (
-    typeof v["failures"] === "number" &&
-    Number.isFinite(v["failures"]) &&
-    typeof v["successes"] === "number" &&
-    Number.isFinite(v["successes"]) &&
-    isFiniteNumberOrNull(v["lastFailureAt"]) &&
-    isFiniteNumberOrNull(v["lastSuccessAt"]) &&
-    isFiniteNumberOrNull(v["openedAt"]) &&
-    typeof v["flaps"] === "number" &&
-    Number.isFinite(v["flaps"])
-  );
+	if (typeof value !== "object" || value === null) return false;
+	const v = value as Record<string, unknown>;
+	const state = v["state"];
+	if (typeof state !== "string" || !CIRCUIT_STATES.includes(state)) return false;
+	return (
+		typeof v["failures"] === "number" &&
+		Number.isFinite(v["failures"]) &&
+		typeof v["successes"] === "number" &&
+		Number.isFinite(v["successes"]) &&
+		isFiniteNumberOrNull(v["lastFailureAt"]) &&
+		isFiniteNumberOrNull(v["lastSuccessAt"]) &&
+		isFiniteNumberOrNull(v["openedAt"]) &&
+		typeof v["flaps"] === "number" &&
+		Number.isFinite(v["flaps"])
+	);
 }
 
-// Fail-closed-to-null: a KV read error returns null so a broken KV layer
-// degrades to "no persisted state" instead of breaking the sync itself.
-export function readKv(namespace: string, key: string): string | null {
-  try {
-    const db = getDbInstance();
-    const row = db.prepare(KV_READ_SQL).get(namespace, key) as { value: string } | undefined;
-    return row?.value ?? null;
-  } catch (err) {
-    console.warn(`[INTEL_SYNC] Failed to read ${namespace}/${key}: ${getErrorMessage(err)}`);
-    return null;
-  }
-}
 
-export function writeKv(namespace: string, key: string, value: string): void {
-  try {
-    const db = getDbInstance();
-    db.prepare(KV_WRITE_SQL).run(namespace, key, value);
-  } catch (err) {
-    console.warn(`[INTEL_SYNC] Failed to persist ${namespace}/${key}: ${getErrorMessage(err)}`);
-  }
-}
-
-// Fail-closed-to-void: a KV delete error is logged and swallowed so a stuck
-// KV row only costs a redundant fetch later, never a broken sync.
-export function deleteKv(namespace: string, key: string): void {
-  try {
-    const db = getDbInstance();
-    db.prepare(KV_DELETE_SQL).run(namespace, key);
-  } catch (err) {
-    console.warn(`[INTEL_SYNC] Failed to delete ${namespace}/${key}: ${getErrorMessage(err)}`);
-  }
-}
 
 export class BaseSync {
-  protected config: BaseSyncConfig;
-  protected failureCount = 0;
-  protected successCount = 0;
-  protected lastFailureAt: number | null = null;
-  protected lastSuccessAt: number | null = null;
-  protected openedAt: number | null = null;
-  protected state: "closed" | "open" | "half-open" = "closed";
-  protected flaps = 0;
+	protected config: BaseSyncConfig;
+	protected failureCount = 0;
+	protected successCount = 0;
+	protected lastFailureAt: number | null = null;
+	protected lastSuccessAt: number | null = null;
+	protected openedAt: number | null = null;
+	protected state: "closed" | "open" | "half-open" = "closed";
+	protected flaps = 0;
 
-  constructor(config: BaseSyncConfig) {
-    if (!Number.isFinite(config.backoffMs) || config.backoffMs <= 0) {
-      throw new Error(
-        `[INTEL_SYNC:${config.source}] Invalid backoffMs ${String(config.backoffMs)}: must be a finite number > 0`
-      );
-    }
-    this.config = {
-      failureThreshold: DEFAULT_FAILURE_THRESHOLD,
-      successThreshold: DEFAULT_SUCCESS_THRESHOLD,
-      windowMs: DEFAULT_WINDOW_MS,
-      resetTimeoutMs: DEFAULT_RESET_TIMEOUT_MS,
-      minBackoffMs: DEFAULT_MIN_BACKOFF_MS,
-      maxBackoffMs: config.backoffMs * MAX_BACKOFF_MULTIPLIER,
-      ...config,
-    };
-    this.hydrateState();
-  }
+	constructor(config: BaseSyncConfig) {
+		if (!Number.isFinite(config.backoffMs) || config.backoffMs <= 0) {
+			throw new Error(
+				`[INTEL_SYNC:${config.source}] Invalid backoffMs ${String(config.backoffMs)}: must be a finite number > 0`
+			);
+		}
+		this.config = {
+			failureThreshold: DEFAULT_FAILURE_THRESHOLD,
+			successThreshold: DEFAULT_SUCCESS_THRESHOLD,
+			windowMs: DEFAULT_WINDOW_MS,
+			resetTimeoutMs: DEFAULT_RESET_TIMEOUT_MS,
+			minBackoffMs: DEFAULT_MIN_BACKOFF_MS,
+			maxBackoffMs: config.backoffMs * MAX_BACKOFF_MULTIPLIER,
+			...config,
+		};
+		this.hydrateState();
+	}
 
-  private hydrateState(): void {
-    const raw = readKv(this.config.namespace, CIRCUIT_STATE_KEY);
-    if (raw === null) return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw) as unknown;
-    } catch (err) {
-      console.warn(
-        `[INTEL_SYNC:${this.config.source}] Ignoring corrupt persisted circuit state: ${getErrorMessage(err)}`
-      );
-      return;
-    }
-    if (!isCircuitState(parsed)) {
-      console.warn(`[INTEL_SYNC:${this.config.source}] Ignoring corrupt persisted circuit state: unexpected shape`);
-      return;
-    }
-    this.state = parsed.state;
-    this.failureCount = parsed.failures;
-    this.successCount = parsed.successes;
-    this.lastFailureAt = parsed.lastFailureAt;
-    this.lastSuccessAt = parsed.lastSuccessAt;
-    this.openedAt = parsed.openedAt;
-    this.flaps = parsed.flaps;
-  }
+	private hydrateState(): void {
+		const raw = readKv(this.config.namespace, CIRCUIT_STATE_KEY);
+		if (raw === null) return;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw) as unknown;
+		} catch (err) {
+			console.warn(
+				`[INTEL_SYNC:${this.config.source}] Ignoring corrupt persisted circuit state: ${getErrorMessage(err)}`
+			);
+			return;
+		}
+		if (!isCircuitState(parsed)) {
+			console.warn(`[INTEL_SYNC:${this.config.source}] Ignoring corrupt persisted circuit state: unexpected shape`);
+			return;
+		}
+		this.state = parsed.state;
+		this.failureCount = parsed.failures;
+		this.successCount = parsed.successes;
+		this.lastFailureAt = parsed.lastFailureAt;
+		this.lastSuccessAt = parsed.lastSuccessAt;
+		this.openedAt = parsed.openedAt;
+		this.flaps = parsed.flaps;
+	}
 
-  getFailureBackoffMs(): number {
-    const base = this.config.backoffMs;
-    const exp = Math.min(
-      base * Math.pow(2, Math.max(0, this.failureCount - 1)),
-      this.config.maxBackoffMs ?? base * MAX_BACKOFF_MULTIPLIER
-    );
-    return Math.max(this.config.minBackoffMs ?? DEFAULT_MIN_BACKOFF_MS, exp);
-  }
+	getFailureBackoffMs(): number {
+		const base = this.config.backoffMs;
+		const exp = Math.min(
+			base * Math.pow(2, Math.max(0, this.failureCount - 1)),
+			this.config.maxBackoffMs ?? base * MAX_BACKOFF_MULTIPLIER
+		);
+		return Math.max(this.config.minBackoffMs ?? DEFAULT_MIN_BACKOFF_MS, exp);
+	}
 
-  recordSuccess(): void {
-    this.failureCount = 0;
-    this.successCount++;
-    this.lastSuccessAt = Date.now();
-    if (this.state === "half-open" && this.successCount >= (this.config.successThreshold ?? DEFAULT_SUCCESS_THRESHOLD)) {
-      this.close();
-    } else if (this.state === "closed") {
-      this.flaps = 0;
-    }
-  }
+	recordSuccess(): void {
+		this.failureCount = 0;
+		this.successCount++;
+		this.lastSuccessAt = Date.now();
+		if (this.state === "half-open" && this.successCount >= (this.config.successThreshold ?? DEFAULT_SUCCESS_THRESHOLD)) {
+			this.close();
+		} else if (this.state === "closed") {
+			this.flaps = 0;
+		}
+	}
 
-  recordFailure(err: unknown): void {
-    this.failureCount++;
-    this.lastFailureAt = Date.now();
-    this.successCount = 0;
-    if (this.state === "closed" && this.failureCount >= (this.config.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD)) {
-      this.open(getErrorMessage(err));
-    } else if (this.state === "half-open") {
-      this.open(getErrorMessage(err));
-    }
-  }
+	recordFailure(err: unknown): void {
+		this.failureCount++;
+		this.lastFailureAt = Date.now();
+		this.successCount = 0;
+		if (this.state === "closed" && this.failureCount >= (this.config.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD)) {
+			this.open(getErrorMessage(err));
+		} else if (this.state === "half-open") {
+			this.open(getErrorMessage(err));
+		}
+	}
 
-  open(reason: string): void {
-    const now = Date.now();
-    if (this.state !== "open") {
-      this.flaps++;
-      console.warn(`[INTEL_SYNC:${this.config.source}] Circuit breaker OPEN: ${reason} (flaps=${this.flaps})`);
-    }
-    this.state = "open";
-    this.openedAt = now;
-    this.writeState();
-  }
+	open(reason: string): void {
+		const now = Date.now();
+		if (this.state !== "open") {
+			this.flaps++;
+			console.warn(`[INTEL_SYNC:${this.config.source}] Circuit breaker OPEN: ${reason} (flaps=${this.flaps})`);
+		}
+		this.state = "open";
+		this.openedAt = now;
+		this.writeState();
+	}
 
-  close(): void {
-    if (this.state !== "closed") {
-      console.log(`[INTEL_SYNC:${this.config.source}] Circuit breaker CLOSED`);
-    }
-    this.state = "closed";
-    this.openedAt = null;
-    this.failureCount = 0;
-    this.successCount = 0;
-    this.writeState();
-  }
+	close(): void {
+		if (this.state !== "closed") {
+			console.log(`[INTEL_SYNC:${this.config.source}] Circuit breaker CLOSED`);
+		}
+		this.state = "closed";
+		this.openedAt = null;
+		this.failureCount = 0;
+		this.successCount = 0;
+		this.writeState();
+	}
 
-  halfOpen(): void {
-    this.state = "half-open";
-    this.successCount = 0;
-    this.writeState();
-  }
+	halfOpen(): void {
+		this.state = "half-open";
+		this.successCount = 0;
+		this.writeState();
+	}
 
-  canAttempt(): boolean {
-    const now = Date.now();
-    if (this.state === "closed") return true;
-    if (this.state === "half-open") return true;
-    if (this.openedAt === null) {
-      throw new Error(
-        `[INTEL_SYNC:${this.config.source}] Invariant violated: circuit is open but openedAt is null`
-      );
-    }
-    if (now - this.openedAt >= (this.config.resetTimeoutMs ?? DEFAULT_RESET_TIMEOUT_MS)) {
-      this.halfOpen();
-      return true;
-    }
-    return false;
-  }
+	canAttempt(): boolean {
+		const now = Date.now();
+		if (this.state === "closed") return true;
+		if (this.state === "half-open") return true;
+		if (this.openedAt === null) {
+			throw new Error(
+				`[INTEL_SYNC:${this.config.source}] Invariant violated: circuit is open but openedAt is null`
+			);
+		}
+		if (now - this.openedAt >= (this.config.resetTimeoutMs ?? DEFAULT_RESET_TIMEOUT_MS)) {
+			this.halfOpen();
+			return true;
+		}
+		return false;
+	}
 
-  writeState(): void {
-    const state: CircuitState = {
-      state: this.state,
-      failures: this.failureCount,
-      successes: this.successCount,
-      lastFailureAt: this.lastFailureAt,
-      lastSuccessAt: this.lastSuccessAt,
-      openedAt: this.openedAt,
-      flaps: this.flaps,
-    };
-    writeKv(this.config.namespace, CIRCUIT_STATE_KEY, JSON.stringify(state));
-  }
+	writeState(): void {
+		const state: CircuitState = {
+			state: this.state,
+			failures: this.failureCount,
+			successes: this.successCount,
+			lastFailureAt: this.lastFailureAt,
+			lastSuccessAt: this.lastSuccessAt,
+			openedAt: this.openedAt,
+			flaps: this.flaps,
+		};
+		writeKv(this.config.namespace, CIRCUIT_STATE_KEY, JSON.stringify(state));
+	}
 }
