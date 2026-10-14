@@ -12,6 +12,7 @@ import {
 } from "@/lib/usage/tokenAccounting";
 import { FORMATS } from "../translator/formats.ts";
 import { pickCacheCreationTokens } from "./pickCacheCreationTokens.ts";
+import { sharedSymbol } from "@/shared/utils/processSingleton";
 
 export { pickCacheCreationTokens };
 
@@ -677,7 +678,7 @@ export function normalizeUsage(usage: UsageLike | null | undefined) {
 // filterUsageForFormat never copy it, so it cannot reach a client payload or change any
 // usage field, cost or budget — it only lets the call-log sink tell estimated usage apart
 // after extraction rebuilt the object without the provider's `estimated` flag.
-const ESTIMATED_USAGE_MARKER = Symbol.for("omniroute.usage.estimated");
+const ESTIMATED_USAGE_MARKER = sharedSymbol("usage.estimated");
 
 export function carryEstimatedUsageMarker<T>(source: unknown, rebuilt: T): T {
   const estimated =
