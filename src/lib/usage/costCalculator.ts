@@ -50,14 +50,42 @@ export type CostCalculationOptions = {
  */
 const USD_TICKS_PER_DOLLAR = 10_000_000_000;
 
+type CostTokenDetails = {
+  cached_tokens?: number;
+  cache_creation_tokens?: number;
+  cache_write_tokens?: number;
+  cache_creation_in_prompt?: boolean;
+  reasoning_tokens?: number;
+};
+
+/** Numeric aliases and nested details accepted from normalized or raw usage. */
+interface CostTokenUsage extends Record<string, unknown> {
+  input?: number;
+  prompt_tokens?: number;
+  input_tokens?: number;
+  cacheRead?: number;
+  cached_tokens?: number;
+  cache_read_input_tokens?: number;
+  cacheCreation?: number;
+  cache_creation_input_tokens?: number;
+  output?: number;
+  completion_tokens?: number;
+  output_tokens?: number;
+  reasoning?: number;
+  reasoning_tokens?: number;
+  cost_in_usd_ticks?: number;
+  prompt_tokens_details?: CostTokenDetails;
+  input_tokens_details?: CostTokenDetails;
+  completion_tokens_details?: CostTokenDetails;
+  output_tokens_details?: CostTokenDetails;
+}
+
 /**
  * Extract an exact, provider-reported USD cost from a token/usage record when one
  * is present, so callers can trust it over the token × pricing estimate. Currently
  * only xAI's `cost_in_usd_ticks` field is handled — see comment above.
  */
-function extractExactCostUsd(
-  tokens: Record<string, number | undefined> | null | undefined
-): number | null {
+function extractExactCostUsd(tokens: CostTokenUsage | null | undefined): number | null {
   const ticks = tokens?.cost_in_usd_ticks;
   if (typeof ticks === "number" && Number.isFinite(ticks) && ticks >= 0) {
     return ticks / USD_TICKS_PER_DOLLAR;
@@ -133,7 +161,7 @@ export function getCodexFastCostMultiplier(
  */
 export function computeCostFromPricing(
   pricing: Record<string, unknown> | null | undefined,
-  tokens: Record<string, number | undefined> | null | undefined,
+  tokens: CostTokenUsage | null | undefined,
   options: CostCalculationOptions = {}
 ): number {
   if (!tokens) return 0;
@@ -154,14 +182,32 @@ export function computeCostFromPricing(
 
   let cost = 0;
   const inputTokens = tokens.input ?? tokens.prompt_tokens ?? tokens.input_tokens ?? 0;
+  const promptDetails = tokens.prompt_tokens_details;
+  const inputDetails = tokens.input_tokens_details;
   const cachedTokens =
-    tokens.cacheRead ?? tokens.cached_tokens ?? tokens.cache_read_input_tokens ?? 0;
-  const cacheCreationTokens = tokens.cacheCreation ?? tokens.cache_creation_input_tokens ?? 0;
+    tokens.cacheRead ??
+    tokens.cached_tokens ??
+    tokens.cache_read_input_tokens ??
+    promptDetails?.cached_tokens ??
+    inputDetails?.cached_tokens ??
+    0;
+  const cacheCreationTokens =
+    tokens.cacheCreation ??
+    tokens.cache_creation_input_tokens ??
+    promptDetails?.cache_creation_tokens ??
+    inputDetails?.cache_creation_tokens ??
+    promptDetails?.cache_write_tokens ??
+    inputDetails?.cache_write_tokens ??
+    0;
+  const cacheCreationInPrompt =
+    inputDetails?.cache_creation_in_prompt ?? promptDetails?.cache_creation_in_prompt;
 
   // prompt_tokens from extractors already includes cache_read + cache_creation,
   // so we must subtract BOTH cache types to avoid pricing cache at the full
   // input rate in addition to their dedicated cache_* rates below.
-  const nonCachedInput = Math.max(0, inputTokens - cachedTokens - cacheCreationTokens);
+  // Translated usage can explicitly keep cache creation outside that total.
+  const includedCacheCreation = cacheCreationInPrompt === false ? 0 : cacheCreationTokens;
+  const nonCachedInput = Math.max(0, inputTokens - cachedTokens - includedCacheCreation);
   cost += nonCachedInput * (inputPrice / 1_000_000);
   if (cachedTokens > 0) cost += cachedTokens * (cachedPrice / 1_000_000);
 
@@ -170,7 +216,12 @@ export function computeCostFromPricing(
 
   // completion_tokens is reasoning-inclusive. Reasoning is already billed at
   // the output rate above, so a dedicated price contributes only its premium.
-  const reasoningTokens = tokens.reasoning ?? tokens.reasoning_tokens ?? 0;
+  const reasoningTokens =
+    tokens.reasoning ??
+    tokens.reasoning_tokens ??
+    tokens.completion_tokens_details?.reasoning_tokens ??
+    tokens.output_tokens_details?.reasoning_tokens ??
+    0;
   if (reasoningTokens > outputTokens) {
     // Reasoning exceeding completion is impossible when completion is inclusive,
     // so the provider reports separate buckets (#15496): bill reasoning on top.
@@ -201,7 +252,7 @@ export interface CostCalculationResult {
 export async function calculateCostDetailed(
   provider: string,
   model: string,
-  tokens: Record<string, number | undefined> | null | undefined,
+  tokens: CostTokenUsage | null | undefined,
   options: CostCalculationOptions = {}
 ): Promise<CostCalculationResult> {
   if (!tokens || !provider || !model) return { costUsd: 0, priced: true };
@@ -253,7 +304,7 @@ export async function calculateCostDetailed(
 export async function calculateCost(
   provider: string,
   model: string,
-  tokens: Record<string, number | undefined> | null | undefined,
+  tokens: CostTokenUsage | null | undefined,
   options: CostCalculationOptions = {}
 ): Promise<number> {
   const result = await calculateCostDetailed(provider, model, tokens, options);
