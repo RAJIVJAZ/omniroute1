@@ -63,6 +63,9 @@ const PROVIDER_LIMITS_APIKEY_PROVIDERS = new Set([
   "nanogpt",
   "apmix",
   "deepseek",
+  // StepFun account balance (GET /v1/accounts; base-URL override selects
+  // China vs international platform — same override the chat path honors)
+  "stepfun",
   "xiaomi-mimo",
   "vertex",
   "vertex-partner",
