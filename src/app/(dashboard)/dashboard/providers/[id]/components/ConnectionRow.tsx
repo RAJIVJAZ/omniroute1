@@ -23,6 +23,8 @@ import { getCodexPlanLabel } from "../codexPlanLabel";
 import type { CodexAccountPoolProjection } from "@omniroute/open-sse/services/codexAccount/index.ts";
 import CodexAccountDetails from "./CodexAccountDetails";
 import ConnectionQuotaPanel from "./ConnectionQuotaPanel";
+import ConnectionQuotaRefreshButton from "./ConnectionQuotaRefreshButton";
+import type { QuotaRefreshState } from "../hooks/providerQuotaRefresh";
 import type { ProviderQuotaCacheEntry } from "../hooks/useProviderQuota";
 import {
   isProviderQuotaVisible,
@@ -121,6 +123,7 @@ export interface ConnectionRowProps {
   /** Latest cached usage/limits snapshot for this account (see useProviderQuota). */
   quotaCache?: ProviderQuotaCacheEntry | null;
   quotaRefreshing?: boolean;
+  quotaRefreshState?: QuotaRefreshState;
   onRefreshQuota?: () => void;
 }
 
@@ -412,6 +415,7 @@ export default function ConnectionRow({
   onToggleProxyEnabled,
   quotaCache,
   quotaRefreshing,
+  quotaRefreshState,
   onRefreshQuota,
 }: ConnectionRowProps) {
   const t = useTranslations("providers");
@@ -691,6 +695,13 @@ export default function ConnectionRow({
               <ProviderQuotaVisibilityToggle
                 visible={quotaVisible}
                 onToggle={onToggleQuotaVisibility}
+              />
+            )}
+            {connection.provider === "codex" && onRefreshQuota && (
+              <ConnectionQuotaRefreshButton
+                refreshing={quotaRefreshing}
+                state={quotaRefreshState}
+                onRefresh={onRefreshQuota}
               />
             )}
             {onToggleAutoSync && (
@@ -1048,7 +1059,7 @@ export default function ConnectionRow({
           connection={connection}
           cache={quotaCache}
           refreshing={quotaRefreshing}
-          onRefresh={onRefreshQuota}
+          onRefresh={connection.provider === "codex" ? undefined : onRefreshQuota}
         />
       ) : null}
     </div>
