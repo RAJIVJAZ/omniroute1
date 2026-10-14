@@ -33,6 +33,7 @@ import {
 } from "../utils/opencodeHeaders.ts";
 import { projectOpencodeSessionBody } from "../utils/opencodeSessionIdentity.ts";
 import { listForRequest, releaseRequestList } from "./opencodeAccountScope.ts";
+import { applyRegistryToolNameLengthAliases } from "./toolNameLengthAlias.ts";
 import type { ScopedAccount, ScopedAccountHealth } from "./opencodeAccountScope.ts";
 import { guardRequiredAccountProxies } from "./opencodeRequiredProxy.ts";
 import {
@@ -1525,6 +1526,13 @@ export class OpencodeExecutor extends BaseExecutor {
     // placeholder for the affected model families.
     if (isThinkingMessageModel(model)) {
       modifiedBody = injectReasoningContentForThinkingModel(modifiedBody);
+    }
+    // OpenCode chat-completions 400s on tool names over 64 chars (Claude Code MCP
+    // names hit this). Alias them last, on the final body, so the request-scoped
+    // `_toolNameMap` restores the originals in the response. Claude / Responses
+    // surfaces carry their own tool shapes and are left alone.
+    if ((this._requestFormat ?? resolveOpencodeTargetFormat(this.provider, model)) === "openai") {
+      applyRegistryToolNameLengthAliases(this.provider, modifiedBody);
     }
     return modifiedBody;
   }

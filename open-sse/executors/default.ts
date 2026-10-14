@@ -20,7 +20,7 @@ import {
 import { isOfficialAnthropicBaseUrl } from "../utils/anthropicHost.ts";
 import { applyProviderRequestDefaults } from "../services/providerRequestDefaults.ts";
 import { stripUnsupportedParams } from "../translator/paramSupport.ts";
-import { normalizeOpenAIToolNames } from "../translator/helpers/toolCallHelper.ts";
+import { applyRegistryToolNameLengthAliases } from "./toolNameLengthAlias.ts";
 import {
   injectReasoningContentForThinkingModel,
   shouldInjectReasoningContentPlaceholder,
@@ -1047,33 +1047,7 @@ export class DefaultExecutor extends BaseExecutor {
       }
     }
 
-    const toolNameMaxLength = getRegistryEntry(this.provider)?.toolNameMaxLength;
-    if (
-      toolNameMaxLength &&
-      withDefaults &&
-      typeof withDefaults === "object" &&
-      !Array.isArray(withDefaults)
-    ) {
-      const toolNameMap = normalizeOpenAIToolNames(withDefaults, toolNameMaxLength);
-      if (toolNameMap.size > 0) {
-        const existingToolNameMap =
-          (withDefaults as Record<string, unknown>)._toolNameMap instanceof Map
-            ? ((withDefaults as Record<string, unknown>)._toolNameMap as Map<string, string>)
-            : null;
-        const responseToolNameMap = existingToolNameMap
-          ? new Map(existingToolNameMap)
-          : new Map<string, string>();
-        for (const [alias, original] of toolNameMap) {
-          responseToolNameMap.set(alias, original);
-        }
-        Object.defineProperty(withDefaults, "_toolNameMap", {
-          value: responseToolNameMap,
-          enumerable: false,
-          configurable: true,
-          writable: true,
-        });
-      }
-    }
+    applyRegistryToolNameLengthAliases(this.provider, withDefaults);
 
     return applyRegistryBodyRepairs(this.provider, withDefaults);
   }

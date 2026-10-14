@@ -12,6 +12,8 @@ export const opencodeProvider: RegistryEntry = {
   authPrefix: "Bearer",
   passthroughModels: true,
   defaultContextLength: 200000,
+  // Upstream 400s "name must be at most 64 characters" on chat-completions tools.
+  toolNameMaxLength: 64,
   models: [
     // #2900: big-pickle's upstream runs DeepSeek thinking mode — declare the
     // interleaved reasoning_content contract so follow-up/tool-use turns replay
