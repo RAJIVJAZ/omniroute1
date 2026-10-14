@@ -8,6 +8,7 @@ import {
   pickCacheCreationInPrompt,
 } from "../utils/pickCacheCreationTokens.ts";
 import { normalizeOpenAICompatibleFinishReasonString } from "../utils/finishReason.ts";
+import { computeFinishReason } from "../translator/response/openai-responses/synthesizeCompletedToolCalls.ts";
 import { containsTextualToolCallMarker } from "../utils/textualToolCall.ts";
 import { stripObfuscationZeroWidth } from "../utils/zeroWidth.ts";
 import { getAnyReasoningValue } from "../utils/reasoningFields.ts";
@@ -309,7 +310,12 @@ export function translateNonStreamingResponse(
 
     const createdAt = toNumber(response.created_at, Math.floor(Date.now() / 1000));
     const model = toString(response.model || responseRoot.model, "openai-responses");
-    const finishReason = toolCalls.length > 0 ? "tool_calls" : "stop";
+    // Same rule as the streaming path (#15867): an incomplete response is a
+    // truncated or filtered turn, not a clean stop.
+    const finishReason = computeFinishReason({
+      toolCallIndex: toolCalls.length,
+      incompleteReason: toRecord(response.incomplete_details).reason,
+    });
 
     const result: JsonRecord = {
       id: `chatcmpl-${toString(response.id, String(Date.now()))}`,
