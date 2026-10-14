@@ -1,7 +1,9 @@
+import { gondolaGateway } from "./gondola";
 import { onomeoGateway } from "./onomeo";
 import { unificallyGateway } from "./unifically";
 /** APIKEY provider catalog — gateways family. Pure data; merged by apikey/index.ts via spread. */
 export const APIKEY_PROVIDERS_GATEWAYS = {
+  ...gondolaGateway,
   ...onomeoGateway,
   ...unificallyGateway,
   // 1min.ai (https://docs.1min.ai) — multi-model chat aggregator with its own
