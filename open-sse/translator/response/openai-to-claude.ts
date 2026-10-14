@@ -885,8 +885,9 @@ export function openaiToClaudeResponse(chunk, state) {
   return results.length > 0 ? results : null;
 }
 
-// Convert OpenAI finish_reason to Claude stop_reason
-function convertFinishReason(reason) {
+// Convert OpenAI finish_reason to Claude stop_reason. Shared with the
+// non-streaming translator so both paths give a Claude client the same value.
+export function convertFinishReason(reason) {
   switch (reason) {
     case "stop":
       return "end_turn";
@@ -894,6 +895,10 @@ function convertFinishReason(reason) {
       return "max_tokens";
     case "tool_calls":
       return "tool_use";
+    case "content_filter":
+      // Claude's own name for a blocked turn; a clean end_turn would read as a
+      // complete answer.
+      return "refusal";
     default:
       // Gemini/Antigravity abort reasons (e.g. MALFORMED_FUNCTION_CALL,
       // UNEXPECTED_TOOL_CALL — see isAbortFinishReason) reach here unrecognized

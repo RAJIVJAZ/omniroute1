@@ -19,6 +19,7 @@ import { restoreClaudeToolName } from "../services/claudeCodeToolRemapper.ts";
 import { extractReplayableResponsesReasoningText } from "../services/reasoningInputPolicy.ts";
 import { sanitizeToolId } from "../translator/helpers/schemaCoercion.ts";
 import { stripEmptyOptionalToolArgs } from "../translator/response/openai-responses/pureHelpers.ts";
+import { convertFinishReason } from "../translator/response/openai-to-claude.ts";
 import {
   extractThinkingFromContent,
   shouldParseTextualReasoningTags,
@@ -847,9 +848,7 @@ function convertOpenAINonStreamingToClaude(
     }
   }
 
-  let stopReason = toString(choiceObj.finish_reason, "end_turn");
-  if (stopReason === "stop") stopReason = "end_turn";
-  if (stopReason === "tool_calls") stopReason = "tool_use";
+  const stopReason = convertFinishReason(toString(choiceObj.finish_reason, "stop"));
 
   const usageSrc = toRecord(openaiResponse.usage);
   const promptTokens = toNumber(usageSrc.prompt_tokens, 0);
