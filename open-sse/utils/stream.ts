@@ -57,6 +57,7 @@ import {
   type StreamFailurePayload,
 } from "./streamErrorFormat.ts";
 import { createStreamFailureAborter } from "./streamFailureBoundary.ts";
+import { buildStreamFailureSnapshot } from "./streamFailureSnapshot.ts";
 import { createReasoningStreamObserver } from "./responsesReasoningObservation.ts";
 import { recordToolLatency } from "../services/toolLatencyTracker.ts";
 import { extractToolSchemaMap } from "../translator/response/openai-responses/toolSchemas.ts";
@@ -240,6 +241,7 @@ type TranslateState = ReturnType<typeof initState> & {
     type: string;
     code: string;
     message: string;
+    streamSnapshot?: import("./streamErrorFormat.ts").StreamFailureSnapshot;
   } | null;
 };
 
@@ -1157,7 +1159,13 @@ export function createSSEStream(options: StreamOptions = {}) {
     let failureHandled = false;
     if (onFailure) {
       try {
-        failureHandled = onFailure({ status: 502, message: msg, code: "empty_response" }) === true;
+        failureHandled =
+          onFailure({
+            status: 502,
+            message: msg,
+            code: "empty_response",
+            streamSnapshot: buildStreamFailureSnapshot(providerPayloadCollector),
+          }) === true;
       } catch (e) {
         console.debug(`[STREAM] onFailure callback error (empty_response):`, e);
       }
@@ -1346,6 +1354,7 @@ export function createSSEStream(options: StreamOptions = {}) {
   const abortStreamFailure = createStreamFailureAborter({
     onFailure,
     onComplete,
+    attachFailureSnapshot: () => buildStreamFailureSnapshot(providerPayloadCollector),
     getUsage: () => state?.usage,
     timing,
     buildProviderPayload: () =>
@@ -1365,6 +1374,7 @@ export function createSSEStream(options: StreamOptions = {}) {
   ): boolean => {
     const failure = prepareTranslatedStreamFailure(payload);
     if (!failure) return false;
+    failure.internalFailure.streamSnapshot ??= buildStreamFailureSnapshot(providerPayloadCollector);
     providerPayloadCollector.push(failure.providerPayload);
     const output = formatTranslatedStreamError(failure.record, sourceFormat);
     reqLogger?.appendConvertedChunk?.(output);
@@ -1398,6 +1408,7 @@ export function createSSEStream(options: StreamOptions = {}) {
                       message: timeoutMsg,
                       code: "stream_idle_timeout",
                       type: "timeout_error",
+                      streamSnapshot: buildStreamFailureSnapshot(providerPayloadCollector),
                     }) === true;
                 } catch (e) {
                   console.debug(`[STREAM] onFailure callback error (idle_timeout):`, e);
@@ -1533,6 +1544,10 @@ export function createSSEStream(options: StreamOptions = {}) {
                 if (projectedFailure) {
                   parsed = projectedFailure.publicPayload;
                   failurePayload = projectedFailure.internalFailure;
+                  failurePayload.streamSnapshot ??= buildStreamFailureSnapshot(
+                    providerPayloadCollector,
+                    providerPayloadCollector.getEventCount() - 1
+                  );
                   publicFailureMessage = projectedFailure.publicMessage;
                   output = `data: ${JSON.stringify(parsed)}\n\n`;
                   injectedUsage = true;
@@ -2637,6 +2652,11 @@ export function createSSEStream(options: StreamOptions = {}) {
                 bufferedProjectedFailure = projectStreamFailureEvent(bufferedPayload);
                 if (bufferedProjectedFailure) {
                   bufferedPayload = bufferedProjectedFailure.publicPayload;
+                  bufferedProjectedFailure.internalFailure.streamSnapshot ??=
+                    buildStreamFailureSnapshot(
+                      providerPayloadCollector,
+                      providerPayloadCollector.getEventCount() - 1
+                    );
                   output = `data: ${JSON.stringify(bufferedPayload)}\n\n`;
                 }
                 if (sanitizeUsagePayloadForRequest(bufferedPayload, body, clientResponseFormat))
@@ -3009,6 +3029,7 @@ export function createSSEStream(options: StreamOptions = {}) {
 
             const errorBody = buildErrorBody(err.status, err.message);
             const publicErrorMessage = errorBody.error.message;
+            err.streamSnapshot ??= buildStreamFailureSnapshot(providerPayloadCollector);
             abortStreamFailure(controller, err, publicErrorMessage, { notifyComplete: true });
             return;
           }
@@ -3054,6 +3075,7 @@ export function createSSEStream(options: StreamOptions = {}) {
           if (state?.upstreamError) {
             const err = state.upstreamError;
             const publicErrorMessage = buildErrorBody(err.status, err.message).error.message;
+            err.streamSnapshot ??= buildStreamFailureSnapshot(providerPayloadCollector);
             abortStreamFailure(controller, err, publicErrorMessage, {
               notifyComplete: true,
               preserveQueuedChunks: true,
