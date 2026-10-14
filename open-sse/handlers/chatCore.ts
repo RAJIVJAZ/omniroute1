@@ -2272,7 +2272,7 @@ async function handleChatCoreInner({
   const normalizeClaudeUpstreamMessages = (
     payload: Record<string, unknown>,
     options?: { preserveToolResultBlocks?: boolean }
-  ) => normalizeClaudeUpstreamMessagesFor(payload, options, log);
+  ) => normalizeClaudeUpstreamMessagesFor(payload, { ...options, provider, sourceFormat }, log);
 
   try {
     if (nativeResponsesPassthrough) {
