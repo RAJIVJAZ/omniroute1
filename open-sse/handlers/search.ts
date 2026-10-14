@@ -36,6 +36,7 @@ import { buildJinaSearchRequest, extractJinaSearchItems } from "./search/jinaSea
 import * as xSearch from "./search/xSearch.ts";
 import * as xquikSearch from "./search/xquikSearch.ts";
 import * as anysearchSearch from "./search/anysearchSearch.ts";
+import * as kimiSearch from "./search/kimiSearch.ts";
 import { freeWebSearch } from "../services/freeWebSearch.ts";
 import { saveCallLog } from "@/lib/usageDb";
 import { safeOutboundFetch } from "@/shared/network/safeOutboundFetch";
@@ -134,7 +135,11 @@ const DEFAULT_GLOBAL_TIMEOUT_MS = 15_000;
 const MIN_SEARCH_TIMEOUT_MS = 1_000;
 const MAX_SEARCH_TIMEOUT_MS = 120_000;
 
-function clampSearchTimeoutMs(override: number | undefined, fallback: number, floor: number): number {
+function clampSearchTimeoutMs(
+  override: number | undefined,
+  fallback: number,
+  floor: number
+): number {
   if (typeof override !== "number" || !Number.isFinite(override)) return fallback;
   return Math.min(MAX_SEARCH_TIMEOUT_MS, Math.max(floor, Math.floor(override)));
 }
@@ -744,6 +749,7 @@ const requestBuilders: Record<string, SearchRequestBuilder> = {
   "perplexity-search": buildPerplexityRequest,
   "exa-search": buildExaRequest,
   "tavily-search": buildTavilyRequest,
+  "kimi-search": kimiSearch.buildKimiSearchRequest,
   "nimble-search": buildNimbleRequest,
   firecrawl: fcSearch.buildFirecrawlSearchRequest,
   "google-pse-search": buildGooglePseRequest,
@@ -1364,6 +1370,7 @@ const responseNormalizers: Record<string, SearchResponseNormalizer> = {
   "perplexity-search": normalizePerplexityResponse,
   "exa-search": normalizeExaResponse,
   "tavily-search": normalizeTavilyResponse,
+  "kimi-search": (data: unknown) => kimiSearch.normalizeKimiSearchResponse(data, makeResult),
   "nimble-search": normalizeNimbleResponse,
   firecrawl: (data: FirecrawlSearchEnvelope, _query: string, searchType: string) =>
     fcSearch.normalizeFirecrawlSearchResponse(data, searchType, makeResult),
@@ -1741,7 +1748,14 @@ async function tryProvider(
   const { query, searchType, maxResults } = params;
 
   if (config.id === "duckduckgo-free") {
-    return tryDuckDuckGoFreeProvider(config, params, startTime, globalStartTime, globalTimeoutMs, log);
+    return tryDuckDuckGoFreeProvider(
+      config,
+      params,
+      startTime,
+      globalStartTime,
+      globalTimeoutMs,
+      log
+    );
   }
 
   if (config.id === "zai-search" && token) {
