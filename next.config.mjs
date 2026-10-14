@@ -294,6 +294,7 @@ const nextConfig = {
       // That entry reads the tokenizer WASM beside itself at runtime.
       "./node_modules/tiktoken/tiktoken_bg.wasm",
     ],
+    "/api/providers/**/*": ["./src/app/api/providers/**/*"],
   },
   outputFileTracingExcludes: {
     // Planning/task docs, tests, and non-production worktrees are not runtime assets
