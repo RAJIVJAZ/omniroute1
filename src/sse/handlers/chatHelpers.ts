@@ -12,7 +12,10 @@ import {
 import { maybeReactivateAfterExplicitProbe } from "../services/explicitInactiveProbe";
 import { connectionHasExtraKeys } from "@omniroute/open-sse/services/apiKeyRotator.ts";
 import { clearRequestRejectedStreak } from "@omniroute/open-sse/services/requestRejectedStreak.ts";
-import { createBuiltinAutoCombo } from "@omniroute/open-sse/services/autoCombo/builtinCatalog.ts";
+import {
+  createBuiltinAutoCombo,
+  prepareBuiltinAutoComboInputs,
+} from "@omniroute/open-sse/services/autoCombo/builtinCatalog.ts";
 import * as log from "../utils/logger";
 import { updateProviderCredentials } from "../services/tokenRefresh";
 import { detectFormatFromEndpoint } from "@omniroute/open-sse/services/provider.ts";
@@ -185,6 +188,7 @@ export async function resolveModelOrError(
   if (modelInfo.provider === "auto") {
     const suffix = modelInfo.model || "";
     const fuzzyCandidates = [`auto/best-${suffix}`, `auto/${suffix}`];
+    const prepared = await prepareBuiltinAutoComboInputs();
 
     const exactCombo = await getComboForModel(modelStr);
     if (exactCombo) {
@@ -202,7 +206,7 @@ export async function resolveModelOrError(
     }
 
     try {
-      const virtualCombo = await createBuiltinAutoCombo(modelStr, suffix);
+      const virtualCombo = await createBuiltinAutoCombo(modelStr, suffix, prepared);
       const poolSize = virtualCombo.candidatePool?.length || 0;
       log.info(
         "AUTO",
@@ -227,7 +231,8 @@ export async function resolveModelOrError(
       try {
         const virtualCombo = await createBuiltinAutoCombo(
           candidate,
-          candidate.replace(/^auto\/?/, "")
+          candidate.replace(/^auto\/?/, ""),
+          prepared
         );
         log.info(
           "AUTO",
