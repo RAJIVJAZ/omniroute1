@@ -52,6 +52,44 @@ function urlImagePart(url) {
   return { fileData: { fileUri: url, mimeType: "image/*" } };
 }
 
+function mergeTrailingTextIntoFunctionResponses(contents: GeminiContent[]) {
+  for (const content of contents) {
+    if (content.role !== "user") continue;
+
+    const responseIndexes: number[] = [];
+    for (let index = 0; index < content.parts.length; index++) {
+      if (content.parts[index].functionResponse) responseIndexes.push(index);
+    }
+
+    for (let responseNumber = responseIndexes.length - 1; responseNumber >= 0; responseNumber--) {
+      const responseIndex = responseIndexes[responseNumber];
+      const nextResponseIndex = responseIndexes[responseNumber + 1] ?? content.parts.length;
+      const textIndexes: number[] = [];
+      const textParts: string[] = [];
+      for (let index = responseIndex + 1; index < nextResponseIndex; index++) {
+        const part = content.parts[index];
+        if (Object.keys(part).length === 1 && typeof part.text === "string") {
+          textIndexes.push(index);
+          textParts.push(part.text);
+        }
+      }
+      if (textParts.length === 0) continue;
+
+      const functionResponse = content.parts[responseIndex].functionResponse as {
+        response?: Record<string, unknown>;
+      };
+      const response = functionResponse.response;
+      if (!response || typeof response.result !== "string") continue;
+
+      const combinedText = textParts.join("\n");
+      if (!combinedText) continue;
+
+      response.result = response.result ? `${response.result}\n${combinedText}` : combinedText;
+      for (const index of textIndexes.reverse()) content.parts.splice(index, 1);
+    }
+  }
+}
+
 /**
  * Direct Claude → Gemini request translator.
  * Converts Claude Messages API body directly to Gemini format,
@@ -380,6 +418,7 @@ export function claudeToGeminiRequest(model, body, stream, credentials = null) {
   // (400 INVALID_ARGUMENT: "Request contains consecutive messages with the same role").
   // Normalize adjacent same-role messages by concatenating their parts.
   result.contents = mergeConsecutiveSameRoleContents(result.contents);
+  mergeTrailingTextIntoFunctionResponses(result.contents);
   // Guard the one alternation violation the merge above cannot reach: history
   // that opens with a functionCall-bearing turn instead of a user turn.
   result.contents = ensureHistoryDoesNotOpenWithFunctionCall(result.contents);
