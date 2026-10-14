@@ -18,9 +18,14 @@ function wireDelta(delta: unknown): string {
   ].join("\n");
 }
 
-test("thinking-phase signature-only delta counts as stream liveness", () => {
+test("thinking-phase signature-only delta is progress, not useful output", () => {
   const frame = wireDelta({ type: "signature_delta", signature: "GkDPeXJveXQ" });
-  assert.equal(hasUsefulStreamContent(frame), true);
+  const watcher = createStreamContentWatcher();
+  watcher.note(frame);
+  watcher.finish();
+  assert.equal(hasUsefulStreamContent(frame), false);
+  assert.equal(watcher.sawContent(), false);
+  assert.equal(watcher.reasoningProgress(), 1);
 });
 
 test("thinking-phase text delta still counts as stream liveness", () => {
@@ -68,7 +73,8 @@ test("content watcher observes thinking-phase deltas as liveness", () => {
     watcher.note(wireDelta({ type: "signature_delta", signature: "GkDPeXJveXQ" }));
     watcher.note(wireDelta({ type: "signature_delta", signature: "Q2hySHkzV3c" }));
     watcher.finish();
-    assert.equal(watcher.sawContent(), true);
+    assert.equal(watcher.sawContent(), false);
+    assert.equal(watcher.reasoningProgress(), 2);
   } finally {
     watcher.finish();
   }

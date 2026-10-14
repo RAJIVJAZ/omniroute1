@@ -244,14 +244,18 @@ await test.describe("#16072 executed empty-terminal contract", async () => {
     });
   }
 
-  test("#16072 Codex created then EOF cannot use a translated synthetic stop as native proof", async () => {
+  test("#16072 Codex created then EOF is recovered rather than accepted as native proof", async () => {
     const { response, text, calls } = await requestStream(
       "codex/gpt-5.4",
       createdResponses,
       "https://chatgpt.com/backend-api/codex/responses"
     );
     assert.ok(response.status >= 400 || text.includes('"error"'), text);
-    assert.equal(calls.length, 1);
+    assert.equal(
+      calls.length,
+      2,
+      "the malformed empty lifecycle must use the bounded recovery attempt"
+    );
   });
 
   test("#16072 HTTP JSON-to-SSE combo preserves a native normal terminal", async () => {

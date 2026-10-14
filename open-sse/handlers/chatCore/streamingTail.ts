@@ -180,6 +180,7 @@ export async function runStreamingTail(deps: StreamingTailDeps) {
     provider,
     model,
     log,
+    contentProbeMs: provider === "claude" || provider === "codex" ? 1000 : undefined,
   });
   // A stall is an upstream issue, not an account fault — the executor loop
   // already ended at headers, so this bounded retry is the only recovery left.

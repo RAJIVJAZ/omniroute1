@@ -1252,6 +1252,7 @@ async function handleChatImplementation(
           executionKey?: string | null;
           stepId?: string | null;
           allowedConnectionIds?: string[] | null;
+          emptyTurnConnectionId?: string | null;
           failoverBeforeRetry?: boolean;
           providerId?: string | null;
           effectiveComboStrategy?: string | null;
@@ -1274,6 +1275,7 @@ async function handleChatImplementation(
             ...resolvedPolicy.comboAuthorizationOptions(apiKeyInfo, resolvedModelStr),
             forcedConnectionId: target?.connectionId ?? null,
             allowedConnectionIds: target?.allowedConnectionIds ?? null,
+            emptyTurnConnectionId: target?.emptyTurnConnectionId ?? null,
             comboStepId: target?.stepId || null,
             comboExecutionKey: target?.executionKey || target?.stepId || null,
             skipUpstreamRetry: target?.failoverBeforeRetry ?? false,
@@ -1500,6 +1502,7 @@ async function handleSingleModelChat(
     sessionAffinityKey?: string | null;
     forcedConnectionId?: string | null;
     allowedConnectionIds?: string[] | null;
+    emptyTurnConnectionId?: string | null;
     comboStepId?: string | null;
     comboExecutionKey?: string | null;
     skipUpstreamRetry?: boolean;
@@ -1787,52 +1790,68 @@ async function handleSingleModelChat(
     initialPreselectedCredentials = null;
 
     while (true) {
-      const credentials =
-        preselectedCredentials && excludedConnectionIds.size === 0 && !agy.on
+      const emptyTurnExcluded = new Set(excludedConnectionIds);
+      if (
+        runtimeOptions.emptyTurnConnectionId &&
+        !hasForcedConnection &&
+        !runtimeOptions.managedLease
+      ) {
+        emptyTurnExcluded.add(runtimeOptions.emptyTurnConnectionId);
+      }
+      const selectCredentials = (excluded: Set<string>) =>
+        getProviderCredentialsWithQuotaPreflight(
+          provider,
+          null,
+          effectiveAllowedConnections,
+          model,
+          {
+            requireToolCalling: hasQoderCallerTools(body),
+            sessionKey: occupancySessionKey,
+            reserveOAuthSession: true,
+            excludeConnectionIds: Array.from(excluded),
+            ...(agy.on ? { reserveAntigravityLease: true, routingRequestId: agy.requestId } : {}),
+            ...(runtimeOptions.allowRateLimitedConnection
+              ? { allowRateLimitedConnections: true }
+              : {}),
+            ...(forceLiveComboTest
+              ? {
+                  allowSuppressedConnections: true,
+                  bypassQuotaPolicy: true,
+                }
+              : {}),
+            ...(!forceLiveComboTest && bypassProviderQuotaPolicy
+              ? { bypassQuotaPolicy: true }
+              : {}),
+            ...(runtimeOptions.managedLease
+              ? { lease: credentialLease(runtimeOptions.managedLease) }
+              : {}),
+            ...(() => {
+              const effectiveForcedId = resolveForcedConnectionForCredentialPool({
+                forcedConnectionId: forcedConnectionId || null,
+                excludedConnectionIds: excluded,
+                connections: [],
+                allowRateLimitedConnections:
+                  runtimeOptions.allowRateLimitedConnection === true || forceLiveComboTest,
+                bypassQuotaPolicy: forceLiveComboTest || bypassProviderQuotaPolicy,
+                isQuotaExhausted: () => false,
+                isQuotaPolicyBlocked: () => false,
+              });
+              return effectiveForcedId ? { forcedConnectionId: effectiveForcedId } : {};
+            })(),
+          }
+        );
+      let credentials =
+        preselectedCredentials && emptyTurnExcluded.size === 0 && !agy.on
           ? preselectedCredentials
-          : await getProviderCredentialsWithQuotaPreflight(
-              provider,
-              null,
-              effectiveAllowedConnections,
-              model,
-              {
-                requireToolCalling: hasQoderCallerTools(body),
-                sessionKey: occupancySessionKey,
-                reserveOAuthSession: true,
-                excludeConnectionIds: Array.from(excludedConnectionIds),
-                ...(agy.on
-                  ? { reserveAntigravityLease: true, routingRequestId: agy.requestId }
-                  : {}),
-                ...(runtimeOptions.allowRateLimitedConnection
-                  ? { allowRateLimitedConnections: true }
-                  : {}),
-                ...(forceLiveComboTest
-                  ? {
-                      allowSuppressedConnections: true,
-                      bypassQuotaPolicy: true,
-                    }
-                  : {}),
-                ...(!forceLiveComboTest && bypassProviderQuotaPolicy
-                  ? { bypassQuotaPolicy: true }
-                  : {}),
-                ...(runtimeOptions.managedLease
-                  ? { lease: credentialLease(runtimeOptions.managedLease) }
-                  : {}),
-                ...(() => {
-                  const effectiveForcedId = resolveForcedConnectionForCredentialPool({
-                    forcedConnectionId: forcedConnectionId || null,
-                    excludedConnectionIds,
-                    connections: [],
-                    allowRateLimitedConnections:
-                      runtimeOptions.allowRateLimitedConnection === true || forceLiveComboTest,
-                    bypassQuotaPolicy: forceLiveComboTest || bypassProviderQuotaPolicy,
-                    isQuotaExhausted: () => false,
-                    isQuotaPolicyBlocked: () => false,
-                  });
-                  return effectiveForcedId ? { forcedConnectionId: effectiveForcedId } : {};
-                })(),
-              }
-            );
+          : await selectCredentials(emptyTurnExcluded);
+      if (
+        emptyTurnExcluded.size > excludedConnectionIds.size &&
+        (!credentials || "allRateLimited" in credentials || "allExpired" in credentials)
+      ) {
+        // Empty turns are stochastic, not account faults. Prefer an allowed sibling,
+        // but a singleton still spends its existing retry on its original account.
+        credentials = await selectCredentials(excludedConnectionIds);
+      }
       preselectedCredentials = null;
 
       if (credentials && "leaseUnavailable" in credentials && credentials.leaseUnavailable) {
@@ -2271,7 +2290,8 @@ async function handleSingleModelChat(
       if (
         (result.errorType === "stream_timeout" ||
           result.errorType === "stream_early_eof" ||
-          result.errorCode === "empty_response") &&
+          result.errorCode === "empty_response" ||
+          result.errorCode === "empty_content") &&
         !isAntigravityStreamReadinessFailure
       ) {
         // Bug #3758: flaky OpenAI-compatible upstreams (e.g. NVIDIA NIM) sometimes
@@ -2282,9 +2302,14 @@ async function handleSingleModelChat(
         // the account unavailable for the early close.
         if (
           shouldRetryStreamEarlyEof(result.errorCode, streamEarlyEofRetries) &&
-          !hasForcedConnection
+          !hasForcedConnection &&
+          !requestSignal?.aborted &&
+          !(isCombo && result.errorCode === "empty_content")
         ) {
           streamEarlyEofRetries += 1;
+          if (result.errorCode === "empty_content") {
+            runtimeOptions.emptyTurnConnectionId = credentials.connectionId;
+          }
           log.warn(
             "STREAM",
             `${provider}/${model} closed the stream early before useful content — retrying once (attempt ${streamEarlyEofRetries})`

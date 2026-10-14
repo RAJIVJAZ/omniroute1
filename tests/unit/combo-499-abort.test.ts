@@ -111,6 +111,51 @@ test("combo loop does NOT stop on 502 (transient) — tries more than one model"
   assert.equal(result.status, 502, "should still return 502 if all models fail");
 });
 
+test("round-robin empty-content recovery stops when the client cancels during retry delay", async () => {
+  const controller = new AbortController();
+  const dispatchedModels: string[] = [];
+  let abortTimer: ReturnType<typeof setTimeout> | undefined;
+  const retryLog = {
+    ...log,
+    info: (_tag: string, message: string) => {
+      if (message.startsWith("Retrying ")) {
+        abortTimer = setTimeout(() => controller.abort(), 1);
+      }
+    },
+  };
+  try {
+    const response = await handleComboChat({
+      body: { model: "test", messages: [{ role: "user", content: "hi" }] },
+      combo: {
+        ...makeCombo("round-robin", ["a/m1", "b/m2"]),
+        config: { maxRetries: 1, retryDelayMs: 100, maxGlobalAttempts: 3 },
+      },
+      handleSingleModel: async (_body, modelStr) => {
+        dispatchedModels.push(modelStr);
+        return new Response(
+          JSON.stringify({
+            error: { code: "empty_content", message: "Provider returned empty content" },
+          }),
+          { status: 502, headers: { "Content-Type": "application/json" } }
+        );
+      },
+      log: retryLog,
+      settings: {},
+      allCombos: [],
+      signal: controller.signal,
+    });
+    assert.equal(controller.signal.aborted, true);
+    assert.equal(
+      dispatchedModels.length,
+      1,
+      "cancellation must prevent retry and sibling dispatch"
+    );
+    assert.equal(response.status, 499);
+  } finally {
+    clearTimeout(abortTimer);
+  }
+});
+
 test("signal abort during fallback wait interrupts immediately", async () => {
   const ac = new AbortController();
   let callCount = 0;
