@@ -106,18 +106,21 @@ export function isAutoDisabledRevalidationDisabled(): boolean {
   return !!value && TRUE_ENV_VALUES.has(value.trim().toLowerCase());
 }
 
-/** True when the connection is a gateway-disabled one whose retest is due. */
-export function isAutoDisabledRevalidationDue(
-  connection: RevalidationCandidate | null | undefined,
-  nowMs: number
-): boolean {
+/** A gateway-disabled API key or OAuth connection whose health check is not turned off. */
+function isRetestableConnection(
+  connection: RevalidationCandidate | null | undefined
+): connection is RevalidationCandidate {
   if (!connection || typeof connection.id !== "string" || connection.id.length === 0) return false;
   if (!isAutoDisabled(connection)) return false;
   if (connection.authType !== "apikey" && connection.authType !== "oauth") return false;
   if (String(connection.provider ?? "") in SEARCH_VALIDATOR_CONFIGS) return false;
-  if (typeof connection.healthCheckInterval === "number" && connection.healthCheckInterval <= 0) {
-    return false;
-  }
+  return !(
+    typeof connection.healthCheckInterval === "number" && connection.healthCheckInterval <= 0
+  );
+}
+
+/** True while the last error, a rate limit or a refresh backoff still rules out a retest. */
+function isRetestHeldBack(connection: RevalidationCandidate, nowMs: number): boolean {
   // Named fields, not a spread: the row may be a lazy view that decrypts its
   // credentials on enumeration.
   const recoverable = isRecoverableInactiveConnection(
@@ -129,13 +132,22 @@ export function isAutoDisabledRevalidationDue(
     },
     nowMs
   );
-  if (!recoverable) return false;
+  if (!recoverable) return true;
   const lastErrorType = String(connection.lastErrorType ?? "")
     .trim()
     .toLowerCase();
-  if (lastErrorType === BAN_ERROR_TYPE) return false;
-  if (instantMs(connection.rateLimitedUntil) > nowMs) return false;
-  if (isInRefreshBackoff(connection, nowMs)) return false;
+  if (lastErrorType === BAN_ERROR_TYPE) return true;
+  if (instantMs(connection.rateLimitedUntil) > nowMs) return true;
+  return isInRefreshBackoff(connection, nowMs);
+}
+
+/** True when the connection is a gateway-disabled one whose retest is due. */
+export function isAutoDisabledRevalidationDue(
+  connection: RevalidationCandidate | null | undefined,
+  nowMs: number
+): boolean {
+  if (!isRetestableConnection(connection)) return false;
+  if (isRetestHeldBack(connection, nowMs)) return false;
   return nowMs - lastTouchMs(connection) >= AUTO_DISABLED_REVALIDATION_INTERVAL_MS;
 }
 
