@@ -46,6 +46,7 @@ import {
 } from "./quotaScoring.ts";
 import { secureRandomFloat, secureRandomInt } from "../../../src/shared/utils/secureRandom.ts";
 import { rankByHeadroom, type HeadroomSaturation } from "./headroomRanking.ts";
+import { resolveQuotaWeightedScoring, scoreQuotaPace } from "./quotaPaceScoring.ts";
 import { getInflight, incrementInflight } from "./quotaShareInflight.ts";
 import { preferAntigravityConnectionsWithStoredProject } from "../antigravityProjectPersist.ts";
 import { getQuotaFetchScope } from "../antigravityQuotaFamily.ts";
@@ -792,6 +793,10 @@ export async function orderTargetsByQuotaWeighted(
     return state !== "OPEN";
   });
 
+  const scoring = resolveQuotaWeightedScoring(configSource);
+  // Pace compares every target against one instant, even if quota fetches finish apart.
+  // Do not read an extra clock in leftover mode: preserve its existing scoring path.
+  const scoreNow = scoring === "pace" ? Date.now() : 0;
   const scoredTargets = await scoreQuotaAwareTargets({
     comboName,
     config,
@@ -799,7 +804,10 @@ export async function orderTargetsByQuotaWeighted(
     expandedTargets: liveTargets,
     log,
     scoreQuota: (quota) => ({
-      score: scoreResetAwareQuota(quota, config).score,
+      score:
+        scoring === "pace"
+          ? scoreQuotaPace(quota, config, scoreNow).score
+          : scoreResetAwareQuota(quota, config).score,
       remainingPercent: getResetAwareRemainingPercent(quota),
     }),
   });
