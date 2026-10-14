@@ -41,6 +41,6 @@ test("scanCodeVars walks nested roots, single files, and skips binary or missing
 
 test("the gate no longer shells out to grep", () => {
   const src = fs.readFileSync(path.join(ROOT, "scripts/check/check-env-doc-sync.mjs"), "utf8");
-  assert.doesNotMatch(src, /2>\/dev\/null/);
-  assert.doesNotMatch(src, /\bexecSync\b/);
+  // Match the import, not prose: the doc comment on scanCodeVars quotes the old grep line.
+  assert.doesNotMatch(src, /from\s+["'](node:)?child_process["']/);
 });
