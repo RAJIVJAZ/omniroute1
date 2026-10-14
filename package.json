@@ -1,0 +1,18 @@
+{
+  "name": "omniroute-deploy",
+  "private": true,
+  "description": "Deployment wrapper for the OmniRoute AI router",
+  "scripts": {
+    "setup": "sh scripts/setup.sh",
+    "start": "node --env-file=.env node_modules/omniroute/bin/omniroute.mjs",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f omniroute"
+  },
+  "dependencies": {
+    "omniroute": "3.8.51"
+  },
+  "engines": {
+    "node": ">=22.22.2 <23 || >=24.0.0 <27"
+  }
+}

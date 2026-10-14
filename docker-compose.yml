@@ -1,0 +1,20 @@
+# OmniRoute — unified OpenAI-compatible AI router
+# Upstream: https://github.com/diegosouzapw/OmniRoute
+services:
+  omniroute:
+    image: diegosouzapw/omniroute:${OMNIROUTE_VERSION:-3.8.51}
+    container_name: omniroute
+    restart: unless-stopped
+    stop_grace_period: 40s
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      OMNIROUTE_MEMORY_MB: ${OMNIROUTE_MEMORY_MB:-1024}
+    ports:
+      # Bound to localhost by default; put a reverse proxy in front to expose it.
+      - "${OMNIROUTE_BIND:-127.0.0.1}:${PORT:-20128}:20128"
+    volumes:
+      - omniroute-data:/app/data
+
+volumes:
+  omniroute-data:
