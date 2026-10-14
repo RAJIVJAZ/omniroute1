@@ -107,6 +107,24 @@ function maybeLiftCodexCooldownOnHeadroom(
   }
 }
 
+/**
+ * #10095 — a window the upstream did not report a fraction for is persisted as
+ * `remaining_percentage = 0` with `raw_data = {"fractionReported":false}`. That
+ * 0 is a placeholder, not a reading: consumers that rank or average remaining
+ * quota must skip these rows. Accepts raw and `rowToCamel` shapes.
+ */
+export function isUnreportedQuotaSnapshot(snapshot: QuotaSnapshotRow): boolean {
+  const view = snapshot as unknown as { rawData?: unknown; raw_data?: unknown };
+  const rawData = view.rawData ?? view.raw_data;
+  if (rawData == null) return false;
+  try {
+    const metadata = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
+    return (metadata as { fractionReported?: unknown } | null)?.fractionReported === false;
+  } catch {
+    return false;
+  }
+}
+
 export function getQuotaSnapshots(opts: {
   provider?: string;
   connectionId?: string;
