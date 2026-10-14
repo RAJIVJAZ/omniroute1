@@ -23,6 +23,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  _setOpencodeFreeModelsForTests,
   applyFreeTierRequestContract,
   configuredPlaceholderToolNames,
   mergeClientToolsWithObserved,
@@ -40,12 +41,23 @@ import {
 } from "../../open-sse/executors/opencodeToolObservation.ts";
 import {
   DEFAULT_OPENCODE_USER_AGENT,
-  OPENCODE_SESSION_PATTERN,
   clientSuppliedOpencodeSession,
   forwardOpencodeClientHeaders,
+  isValidOpencodeSessionValue,
   satisfiesOpencodeUserAgentContract,
 } from "../../open-sse/utils/opencodeHeaders.ts";
 import { OpencodeExecutor } from "../../open-sse/executors/opencode.ts";
+
+/**
+ * The free tier validates the session *value* (the 12-hex time part must decode to the
+ * client's `Identifier.descending()` counter window `0xFC0–0xFFF`), not just its shape.
+ * Asserting `OPENCODE_SESSION_PATTERN` alone would accept an out-of-window counter that
+ * the upstream 403s, so every synthesized session is checked through the value-level
+ * validator instead.
+ */
+function assertDescendingSession(value: string | undefined, message?: string): void {
+  assert.equal(isValidOpencodeSessionValue(value), value, message);
+}
 
 const CHAT_BODY = () => ({
   model: "nemotron-3.5-lightning-free",
@@ -69,10 +81,29 @@ test("the contract applies to free-tier models on the gated surface only", () =>
   assert.equal(requiresFreeTierRequestContract("zen", "opencode-zen", "gpt-5.6-luna"), false);
   // The other surface refuses a request that carries tools rather than one that does not
   // (upstream anomalyco/opencode#44300 and #44382), so it is never brought up to this
-  // contract — including for the free model its registry declares.
+  // contract — including for a free model.
   assert.equal(requiresFreeTierRequestContract("go", "opencode-go", "big-pickle"), false);
   assert.equal(requiresFreeTierRequestContract("go", "opencode-go", "ox-alpha-free"), false);
   assert.equal(requiresFreeTierRequestContract("other", "groq", "big-pickle"), false);
+});
+
+test("with the synced catalog pinned, only its ids count as free", () => {
+  // A model the catalog omits is premium even with a `-free` suffix (the upstream
+  // delisted it — the stale-table failure the catalog rule fixes); a listed id is free.
+  _setOpencodeFreeModelsForTests(["big-pickle", "nemotron-3.5-lightning-free"]);
+  try {
+    assert.equal(requiresFreeTierRequestContract("zen", "opencode", "big-pickle"), true);
+    assert.equal(
+      requiresFreeTierRequestContract("zen", "opencode", "nemotron-3.5-lightning-free"),
+      true
+    );
+    assert.equal(
+      requiresFreeTierRequestContract("zen", "opencode", "delisted-model-free"),
+      false
+    );
+  } finally {
+    _setOpencodeFreeModelsForTests(null);
+  }
 });
 
 test("the surface is told apart by base url, so the `oc` alias needs no special case", () => {
@@ -249,7 +280,7 @@ test("synthesized identity headers carry a canonical session and request id", ()
     }
   );
   assert.equal(headers["User-Agent"], DEFAULT_OPENCODE_USER_AGENT);
-  assert.match(headers["x-opencode-session"] ?? "", OPENCODE_SESSION_PATTERN);
+  assertDescendingSession(headers["x-opencode-session"]);
   assert.match(headers["x-opencode-request"] ?? "", /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
 });
 
@@ -278,8 +309,10 @@ test("the same conversation keeps the same session id, a different one does not"
   );
 });
 
-test("a client session already in the canonical shape is preserved", () => {
-  const canonical = "ses_0123456789abABCDEFGHIJKLMN";
+test("a genuine descending client session (counter in window) is preserved", () => {
+  // A real client id mints `ses_` + ~(ts<<12|counter) hex + 14 base62, so the time part
+  // lands in the 0xFC0–0xFFF window (this one decodes to counter 1 → `ffe`).
+  const canonical = "ses_ecc5beb7cffe2U0aluUnb5nnpZ";
   const headers: Record<string, string> = {};
   forwardOpencodeClientHeaders(
     headers,
@@ -290,9 +323,50 @@ test("a client session already in the canonical shape is preserved", () => {
         client: "desktop",
         project: "global",
       },
+      reencodeSession: true,
     }
   );
   assert.equal(headers["x-opencode-session"], canonical);
+});
+
+test("a shape-valid session with an out-of-window counter is re-minted, not passed through", () => {
+  // Right shape (12 hex + 14 base62) but the time part `0123456789ab` does not decode to
+  // the descending counter window, so the upstream would 403 it. Value-level re-encode.
+  const foreign = "ses_0123456789abABCDEFGHIJKLMN";
+  const headers: Record<string, string> = {};
+  forwardOpencodeClientHeaders(
+    headers,
+    { "x-opencode-session": foreign },
+    {
+      cliDefaults: {
+        userAgent: DEFAULT_OPENCODE_USER_AGENT,
+        client: "desktop",
+        project: "global",
+      },
+      reencodeSession: true,
+    }
+  );
+  assert.notEqual(headers["x-opencode-session"], foreign);
+  assertDescendingSession(headers["x-opencode-session"]);
+});
+
+test("an ungated surface (reencodeSession off) keeps the client's session unchanged", () => {
+  // opencode-go does not enforce the zen counter window, so the session round-trips as-is
+  // (#15311) — only the gated free-tier path validates and re-mints the value.
+  const session = "ses_00000000000000000000000000";
+  const headers: Record<string, string> = {};
+  forwardOpencodeClientHeaders(
+    headers,
+    { "x-opencode-session": session },
+    {
+      cliDefaults: {
+        userAgent: DEFAULT_OPENCODE_USER_AGENT,
+        client: "desktop",
+        project: "global",
+      },
+    }
+  );
+  assert.equal(headers["x-opencode-session"], session);
 });
 
 test("a foreign client session is translated into the canonical shape, deterministically", () => {
@@ -312,7 +386,7 @@ test("a foreign client session is translated into the canonical shape, determini
     return headers["x-opencode-session"];
   };
   const translated = translate();
-  assert.match(translated ?? "", OPENCODE_SESSION_PATTERN);
+  assertDescendingSession(translated);
   assert.equal(translate(), translated, "same client session, same upstream session");
 });
 
@@ -321,7 +395,7 @@ test("buildHeaders: a free-tier request accepts an event stream even when the cl
   const headers = executor.buildHeaders(null, false, null, "nemotron-3.5-lightning-free");
   assert.equal(headers["Accept"], "text/event-stream");
   assert.equal(headers["User-Agent"], DEFAULT_OPENCODE_USER_AGENT);
-  assert.match(headers["x-opencode-session"] ?? "", OPENCODE_SESSION_PATTERN);
+  assertDescendingSession(headers["x-opencode-session"]);
 });
 
 test("buildHeaders: a paid model keeps the client's non-streaming expectation", () => {
@@ -450,7 +524,7 @@ test("responses: two conversations on the same model get different session ids",
     })["x-opencode-session"];
 
   const first = sessionFor("first conversation");
-  assert.match(first ?? "", OPENCODE_SESSION_PATTERN);
+  assertDescendingSession(first);
   assert.equal(sessionFor("first conversation"), first, "same conversation, same session");
   assert.notEqual(
     sessionFor("a completely different opening message"),
