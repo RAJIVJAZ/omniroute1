@@ -250,6 +250,10 @@ export const updateSettingsSchema = z.object({
       enabled: z.boolean().optional(),
       tier: z.enum(["default", "priority", "flex"]).optional(),
       supportedModels: z.array(z.string().max(200)).max(200).optional(),
+      // When true the tier applies to every Codex model (including future ones)
+      // and supportedModels is ignored. Must be listed here or PATCH silently
+      // strips it (same class of bug as comboAutoPromoteEnabled above).
+      applyToAllModels: z.boolean().optional(),
     })
     .optional(),
   // Claude Fast Mode: opt-in toggle that asks a paired CLIProxyAPI build
