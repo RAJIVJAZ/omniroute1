@@ -291,15 +291,20 @@ export const VIDEO_DEDUP_MAX_CANDIDATE_FRAMES = 16;
  * Expand a final caption budget into the bounded pool evaluated by visual deduplication.
  *
  * @param frameCount - Requested number of frames that may reach captioning.
- * @returns One candidate for a one-frame budget, otherwise twice the budget capped at 16.
+ * Structural sampling allocates the final budget across scene intervals itself; doubling
+ * that allocation and uniformly thinning it later can discard the short events it selected.
+ * @returns The final budget for segment-aware sampling, otherwise a bounded doubled pool.
  */
-export function resolveVideoDedupCandidateFrameCount(frameCount: number): number {
+export function resolveVideoDedupCandidateFrameCount(
+  frameCount: number,
+  samplingPolicy: VideoSamplingPolicy = "uniform"
+): number {
   const normalizedFrameCount = Number.isFinite(frameCount) ? Math.floor(frameCount) : 1;
   const finalFrameCount = Math.max(
     1,
     Math.min(VIDEO_DEDUP_MAX_CANDIDATE_FRAMES, normalizedFrameCount)
   );
-  if (finalFrameCount === 1) return 1;
+  if (finalFrameCount === 1 || samplingPolicy === "segment_aware") return finalFrameCount;
   return Math.min(VIDEO_DEDUP_MAX_CANDIDATE_FRAMES, finalFrameCount * 2);
 }
 
@@ -539,7 +544,10 @@ export async function describeVideoPart(
     if (signal.aborted) throw new Error("Video Bridge processing timed out or was aborted");
     if (bytes.byteLength > maxBytes) throw new Error("Video exceeds the maximum size");
     const extractFrames = deps.extractFrames ?? extractVideoFramesViaBroker;
-    const candidateFrameCount = resolveVideoDedupCandidateFrameCount(options.frameCount);
+    const candidateFrameCount = resolveVideoDedupCandidateFrameCount(
+      options.frameCount,
+      options.samplingPolicy
+    );
     const extracted = await extractFrames(bytes, {
       focusWindow: options.focusWindow,
       frameCount: candidateFrameCount,
