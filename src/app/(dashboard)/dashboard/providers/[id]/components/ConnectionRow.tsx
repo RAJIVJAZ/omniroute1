@@ -14,6 +14,7 @@ import { pickDisplayValue } from "@/shared/utils/maskEmail";
 import useEmailPrivacyStore from "@/store/emailPrivacyStore";
 import { isClaudeExtraUsageBlockEnabled } from "@/lib/providers/claudeExtraUsage";
 import { shouldShowConnectionLastError } from "./connectionRowHelpers";
+import { readStoredVerificationUrl } from "@omniroute/open-sse/services/antigravityVerification.ts";
 import {
   getCodexEffectiveServiceTier,
   type CodexGlobalServiceMode,
@@ -435,6 +436,8 @@ export default function ConnectionRow({
   // #11497: cookie rows with a decodable JWT credential carry a persisted
   // cookieExpiresAt — feed it into the same countdown badge OAuth rows use.
   const cookieExpiresAt = readCookieExpiresAt(connection.providerSpecificData);
+  // Antigravity 403 VALIDATION_REQUIRED: Google link that unlocks the account (validated host).
+  const verificationUrl = readStoredVerificationUrl(connection.providerSpecificData);
   const effectiveExpiresAt = connection.tokenExpiresAt || connection.expiresAt || cookieExpiresAt;
   const hasExpirySource = isOAuth || Boolean(cookieExpiresAt);
   const getTokenMinsLeft = () => {
@@ -1015,6 +1018,19 @@ export default function ConnectionRow({
             >
               <span className="material-symbols-outlined text-[18px]">passkey</span>
             </button>
+          )}
+          {verificationUrl && (
+            <a
+              href={verificationUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="p-2 hover:bg-amber-500/10 rounded text-amber-600 hover:text-amber-500"
+              title={t("verifyAccountHint")}
+              aria-label={t("verifyAccount")}
+              data-testid="connection-verify-account"
+            >
+              <span className="material-symbols-outlined text-[18px]">verified_user</span>
+            </a>
           )}
           <button
             onClick={onEdit}

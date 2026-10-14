@@ -201,6 +201,7 @@ import { attachCompressionUsageReceiptAfterAnalytics as attachCompressionUsageRe
 
 import { getQuotaScopeLabelForProvider } from "../services/antigravityQuotaFamily.ts";
 import { excludeConnectionForCooldown } from "./chatCore/connectionCooldown.ts";
+import { recordAntigravityVerificationUrl } from "./chatCore/antigravityVerificationState.ts";
 import { handleRequestRejectedFailure } from "./chatCore/requestRejectedFailure.ts";
 import { projectRetainedProviderFailureMessage } from "./chatCore/providerFailureRetention.ts";
 import { getKimiTemporaryRateLimitResetAt } from "./chatCore/kimiQuotaRecovery.ts";
@@ -3537,6 +3538,14 @@ async function handleChatCoreInner({
           console.warn(
             `[provider] Node ${errorConnectionId} project routing error (${statusCode}) -- not banning`
           );
+          // Antigravity 403 VALIDATION_REQUIRED: keep Google's "verify your account"
+          // link on the connection so the dashboard can offer a Verify button.
+          await recordAntigravityVerificationUrl({
+            provider,
+            connectionId: errorConnectionId,
+            upstreamErrorBody,
+            message,
+          });
           // #14313: free-tier refusal on the keyless path — record a short TTL
           // skip so auto-combo / noauth fallback stop re-picking it immediately.
           if (
