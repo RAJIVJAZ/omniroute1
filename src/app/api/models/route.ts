@@ -176,9 +176,8 @@ export async function handleGetModels(request: Request, dependencies: GetModelsD
         fullModel,
         alias: modelAliases[fullModel] || m.model,
         available,
-        supportsVision:
-          getResolvedModelCapabilities(fullModel, undefined, capabilitySnapshot).supportsVision ===
-          true,
+        supportsVision: capabilities.supportsVision === true,
+        supportsTools: capabilities.toolCalling,
       };
     });
 
