@@ -26,6 +26,7 @@ import {
 } from "./helpers/schemaCoercion.ts";
 import { getRequestTranslator, getResponseTranslator } from "./registry.ts";
 import { bootstrapTranslatorRegistry } from "./bootstrap.ts";
+import { scopeGeminiThoughtSignatureNamespace } from "../services/geminiThoughtSignatureStore.ts";
 import { hasThinkingConfig, normalizeThinkingConfig } from "../services/provider.ts";
 import { applyThinkingBudget } from "../services/thinkingBudget.ts";
 import { applyReasoningRuleDirective } from "@/lib/reasoningRouting/policy";
@@ -33,6 +34,7 @@ import { getModelPreserveVideoUrl } from "@/lib/db/models/modelPreserveVideoUrl"
 import { getResolvedModelCapabilities, supportsReasoning } from "../services/modelCapabilities.ts";
 import { normalizeRoles } from "../services/roleNormalizer.ts";
 import { hoistLeadingSystemMessage } from "./helpers/strictSystemHoist.ts";
+import { ensurePoeUserTurnHasText } from "./helpers/poeImageOnlyUserTurn.ts";
 import {
   buildAssistantMessageCacheKey,
   lookupReasoning,
@@ -44,6 +46,7 @@ import {
   RESPONSES_STORE_MARKER,
 } from "./request/openai-responses/helpers.ts";
 import { applyReasoningInputPolicy } from "../services/reasoningInputPolicy.ts";
+import { normalizeReasoningRequest } from "@/shared/reasoning/effortStandardization";
 
 bootstrapTranslatorRegistry();
 export { register } from "./registry.ts";
@@ -357,7 +360,7 @@ export function translateRequest(
     copilotClient?: boolean;
   }
 ) {
-  let result = body;
+  let result = normalizeReasoningRequest(body, provider);
   const use9CharId = options?.normalizeToolCallId === true;
   const preserveDeveloperRole = options?.preserveDeveloperRole;
   const connectionCacheOverride = resolveConnectionCacheOverride(
@@ -496,7 +499,14 @@ export function translateRequest(
           ? {
               ...(credentials && typeof credentials === "object" ? credentials : {}),
               ...(hasProvider ? { _provider: provider } : {}),
-              ...(hasNs ? { _signatureNamespace: options.signatureNamespace } : {}),
+              ...(hasNs
+                ? {
+                    _signatureNamespace: scopeGeminiThoughtSignatureNamespace(
+                      options.signatureNamespace,
+                      model
+                    ),
+                  }
+                : {}),
             }
           : credentials;
       result = directTranslator(model, result, stream, directCredentials);
@@ -577,16 +587,26 @@ export function translateRequest(
           const hasPreCompression = options?.preCompressionBody != null;
           const hasCopilot = options?.copilotClient === true;
           const hasProvider = provider != null;
+          const videoSensitive = options?.videoTranscriptSensitive === true;
           const translationCredentials =
-            hasNs || hasPreCompression || hasCopilot || hasProvider
+            hasNs || hasPreCompression || hasCopilot || hasProvider || videoSensitive
               ? {
                   ...(credentials && typeof credentials === "object" ? credentials : {}),
-                  ...(hasNs ? { _signatureNamespace: options.signatureNamespace } : {}),
+                  ...(hasNs
+                    ? {
+                        _signatureNamespace: scopeGeminiThoughtSignatureNamespace(
+                          options.signatureNamespace,
+                          model
+                        ),
+                      }
+                    : {}),
                   ...(hasPreCompression ? { _preCompressionBody: options.preCompressionBody } : {}),
                   ...(hasCopilot ? { _copilotClient: true } : {}),
                   // Routed provider id so target translators can apply provider-specific
                   // quirks (e.g. Vertex rejects function_call.id — #3440).
                   ...(hasProvider ? { _provider: provider } : {}),
+                  // Video-derived requests must not replay retained Claude signed thinking.
+                  ...(videoSensitive ? { _videoTranscriptSensitive: true } : {}),
                 }
               : credentials;
           // #9780 — carry the Responses namespace identity map across the pivot.
@@ -873,6 +893,9 @@ export function translateRequest(
   // prompt-cache prefixes stay stable.
   if (targetFormat === FORMATS.OPENAI && result.messages && Array.isArray(result.messages)) {
     result.messages = hoistLeadingSystemMessage(result.messages, provider);
+    // Poe rejects image-only user turns (400 "invalid request error"); give them a
+    // text part. Poe-only — every other provider keeps the exact same payload.
+    result.messages = ensurePoeUserTurnHasText(result.messages, provider);
   }
 
   return result;
