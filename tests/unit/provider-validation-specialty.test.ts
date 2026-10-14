@@ -61,6 +61,15 @@ test("Kiro API key validator resolves profiles with bearer auth", async () => {
     const headers = toPlainHeaders(init.headers);
     calls.push({ url: String(url), headers });
 
+    // Step 1: the key is proven on the Amazon Q model catalog of the connection's region.
+    if (calls.length === 1) {
+      assert.equal(
+        String(url),
+        "https://q.us-east-1.amazonaws.com/ListAvailableModels?origin=AI_EDITOR"
+      );
+      return new Response(JSON.stringify({ models: [] }), { status: 200 });
+    }
+
     assert.equal(String(url), "https://codewhisperer.us-east-1.amazonaws.com");
     assert.equal(headers.Authorization, "Bearer ksk-valid");
     assert.equal(headers["x-amz-target"], "AmazonCodeWhispererService.ListAvailableProfiles");
@@ -83,7 +92,7 @@ test("Kiro API key validator resolves profiles with bearer auth", async () => {
   assert.equal(result.valid, true);
   assert.equal(result.error, null);
   assert.equal(result.method, "kiro_list_available_profiles");
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test("Kiro API key validator accepts API keys that cannot list profiles", async () => {
@@ -100,6 +109,9 @@ test("Kiro API key validator accepts API keys that cannot list profiles", async 
     calls.push({ url: String(url), headers, body });
 
     if (calls.length === 1) {
+      return new Response(JSON.stringify({ models: [] }), { status: 200 });
+    }
+    if (calls.length === 2) {
       return new Response(
         JSON.stringify({
           __type: "com.amazon.aws.codewhisperer#AccessDeniedException",
@@ -109,10 +121,7 @@ test("Kiro API key validator accepts API keys that cannot list profiles", async 
       );
     }
 
-    assert.equal(
-      String(url),
-      "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse"
-    );
+    assert.equal(String(url), "https://q.us-east-1.amazonaws.com/generateAssistantResponse");
     assert.equal(headers.Authorization, "Bearer ksk-valid-without-profile-list");
     assert.equal(headers.tokentype, "API_KEY");
     assert.equal(
@@ -133,7 +142,7 @@ test("Kiro API key validator accepts API keys that cannot list profiles", async 
   assert.equal(result.valid, true);
   assert.equal(result.error, null);
   assert.equal(result.method, "kiro_generate_assistant_response");
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
 });
 
 test("Kiro API key validator rejects runtime auth failures after profile lookup is unsupported", async () => {
@@ -141,6 +150,9 @@ test("Kiro API key validator rejects runtime auth failures after profile lookup 
   globalThis.fetch = async () => {
     calls++;
     if (calls === 1) {
+      return new Response(JSON.stringify({ models: [] }), { status: 200 });
+    }
+    if (calls === 2) {
       return new Response(
         JSON.stringify({
           __type: "com.amazon.aws.codewhisperer#AccessDeniedException",
@@ -160,7 +172,7 @@ test("Kiro API key validator rejects runtime auth failures after profile lookup 
 
   assert.equal(result.valid, false);
   assert.equal(result.error, "Invalid Kiro API key or AWS region");
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
 });
 
 test("Kiro API key validator fails as invalid instead of unsupported", async () => {
@@ -175,7 +187,8 @@ test("Kiro API key validator fails as invalid instead of unsupported", async () 
 
   assert.equal(result.valid, false);
   assert.equal(result.unsupported, false);
-  assert.match(result.error || "", /Failed to list profiles/);
+  // Rejected on the Amazon Q model catalog → the import/test reports an invalid key.
+  assert.match(result.error || "", /Invalid Kiro API key/);
 });
 
 test("specialty provider validators cover Deepgram, AssemblyAI, ElevenLabs and Inworld branches", async () => {
