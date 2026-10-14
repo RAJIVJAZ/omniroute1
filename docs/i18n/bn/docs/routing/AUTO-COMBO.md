@@ -165,34 +165,49 @@ curl -X POST http://localhost:20128/v1/chat/completions \
 
 এখানে নথিভুক্ত মূল বিভ্রান্তির জন্য [#7992](https://github.com/diegosouzapw/OmniRoute/issues/7992) এবং [#7111](https://github.com/diegosouzapw/OmniRoute/issues/7111) দেখুন।
 
-## এটি যেভাবে কাজ করে (স্থায়ী Auto-Comboসমূহ)
+## এটি যেভাবে কাজ করে (স্থায়ী Auto-Combos)
 
-Auto-Combo Engine প্রতিটি অনুরোধের জন্য সেরা provider/model গতিশীলভাবে নির্বাচন করে একটি **১৬-ফ্যাক্টর স্কোরিং ফাংশন** ব্যবহার করে (`open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`-এ সংজ্ঞায়িত)। ডিফল্ট weight-গুলোর যোগফল `1.0`; কাস্টম weight-গুলো `normalizeScoringWeights()` দ্বারা পুনরায় স্বাভাবিকীকরণ করা হয়। ষোলোটির মধ্যে দুটি — `cacheAffinity` এবং `resetWindowAffinity` — এর ডিফল্ট weight হলো `0`; `reliability`-এর `DEFAULT_WEIGHTS`-এ weight `0`, কিন্তু সাধারণ pack-গুলোতে `0.03` এবং `reliability-first`-এ `0.04`, আর `quality`-এর pack-গুলোতে weight `0.02` (`quality-first`-এ `0.03`): তবুও প্রতিটি candidate-এর জন্য এগুলো গণনা করা হয়, এবং `cacheAffinity` স্কোরের বাইরে prompt-cache deduplication নিয়ন্ত্রণ করে, তাই শূন্য-ডিফল্ট ফ্যাক্টরগুলো ডিফল্টভাবে কোনো অবদান রাখে না, যদিও pack-গুলোতে রাখে।
+Auto-Combo Engine প্রতিটি অনুরোধের জন্য একটি **16-factor scoring function** (`open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`-এ সংজ্ঞায়িত) ব্যবহার করে গতিশীলভাবে সেরা provider/model নির্বাচন করে। ডিফল্ট weight-গুলোর যোগফল `1.0`; কাস্টম weight-গুলো `normalizeScoringWeights()` দ্বারা পুনরায় স্বাভাবিকীকরণ করা হয়। ষোলটির মধ্যে দুটি — `cacheAffinity` এবং `resetWindowAffinity` — এর ডিফল্ট weight হলো `0`; `reliability`-এর `DEFAULT_WEIGHTS`-এ মান `0`, তবে সাধারণ pack-গুলোতে `0.03` এবং `reliability-first`-এ `0.04`, আর `quality`-এর pack-গুলোতে মান `0.02` (`quality-first`-এ `0.03`): তবুও প্রতিটি candidate-এর জন্য এগুলো গণনা করা হয়, এবং score-এর বাইরে `cacheAffinity` prompt-cache deduplication নিয়ন্ত্রণ করে। তাই শূন্য-ডিফল্ট factor-গুলো ডিফল্টভাবে কোনো ভোট দেয় না, কিন্তু pack-গুলো দেয়।
 
-![Auto-Combo-এর ১৬-ফ্যাক্টর স্কোরিং](../diagrams/exported/auto-combo-scoring.svg)
+![Auto-Combo-এর 16-factor scoring](../diagrams/exported/auto-combo-scoring.svg)
 
-> উৎস: [diagrams/auto-combo-scoring.mmd](../diagrams/auto-combo-scoring.mmd) (`npm run docs:render-diagrams`-এর মাধ্যমে পুনরায় তৈরি করুন)। ফাইলের নামটি ঐতিহাসিক; source এবং rendered diagram-এ `DEFAULT_WEIGHTS`-এ ঘোষিত সব ১৬টি ফ্যাক্টর দেখানো হয়েছে।
+> উৎস: [diagrams/auto-combo-scoring.mmd](../diagrams/auto-combo-scoring.mmd) (`npm run docs:render-diagrams`-এর মাধ্যমে পুনরায় তৈরি করুন)। filename-টি ঐতিহাসিক; source এবং rendered diagram-এ `DEFAULT_WEIGHTS`-এ ঘোষিত সব 16টি factor দেখানো হয়েছে।
 
-| ফ্যাক্টর              | ডিফল্ট Weight | বিবরণ                                                                                                                                                                                                                      |
+| Factor                | ডিফল্ট Weight | বিবরণ                                                                                                                                                                                                                      |
 | :-------------------- | :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `quota`               | 0.1429        | অবশিষ্ট quota / rate-limit headroom [0..1]                                                                                                                                                                                 |
-| `health`              | 0.1605        | circuit breaker থেকে প্রাপ্ত health score (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                                            |
-| `costInv`             | 0.1429        | বিপরীত **মিশ্রিত** খরচ (৬০% input + ৪০% output token-এর মূল্য, স্বাভাবিকীকৃত) — কম খরচ = বেশি স্কোর                                                                                                                        |
-| `latencyInv`          | 0.1143        | pool অনুযায়ী স্বাভাবিকীকৃত বিপরীত p95 latency — দ্রুততর = বেশি স্কোর                                                                                                                                                      |
-| `taskFit`             | 0.0762        | task-type উপযুক্ততা (coding, review, planning, analysis, debugging, docs)                                                                                                                                                  |
-| `stability`           | 0.0476        | latency standard deviation থেকে variance-ভিত্তিক স্থিতিশীলতা — যে candidate-এর response time বেশি ওঠানামা করে, তার স্কোর কম হয়                                                                                            |
-| `tierPriority`        | 0.0476        | account-tier অগ্রাধিকার — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                                                     |
-| `tierAffinity`        | 0.0476        | candidate-এর tier এবং manifest-এ সুপারিশকৃত tier-এর মধ্যকার affinity                                                                                                                                                       |
-| `specificityMatch`    | 0.0476        | অনুরোধের specificity (manifest hint) এবং model tier-এর মধ্যকার মিল                                                                                                                                                         |
-| `contextAffinity`     | 0.0476        | অনুরোধের context-window-এর প্রয়োজন এবং model-এর context window-এর মধ্যকার affinity                                                                                                                                        |
-| `sessionAvailability` | 0.0476        | এই session-এর জন্য candidate connection-এর OAuth session availability (`getOAuthSessionAvailability()`; non-OAuth connection-গুলো 1.0 স্কোর পায়)                                                                          |
+| `health`              | 0.1605        | circuit breaker থেকে পাওয়া health score (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                                             |
+| `costInv`             | 0.1429        | বিপরীত **blended** খরচ (60% input + 40% output token-এর মূল্য, স্বাভাবিকীকৃত) — সস্তা হলে score বেশি                                                                                                                       |
+| `latencyInv`          | 0.1143        | pool অনুযায়ী স্বাভাবিকীকৃত বিপরীত p95 latency — দ্রুত হলে score বেশি                                                                                                                                                      |
+| `taskFit`             | 0.0762        | task-type-এর উপযোগিতা (coding, review, planning, analysis, debugging, docs)                                                                                                                                                |
+| `stability`           | 0.0476        | latency-এর standard deviation থেকে variance-ভিত্তিক stability — যে candidate-এর response time বেশি ওঠানামা করে, তার score কম হয়                                                                                           |
+| `tierPriority`        | 0.0476        | account-tier-এর priority — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                                                    |
+| `tierAffinity`        | 0.0476        | candidate-এর tier এবং manifest-এর প্রস্তাবিত tier-এর মধ্যকার affinity                                                                                                                                                      |
+| `specificityMatch`    | 0.0476        | request-এর specificity (manifest hint) এবং model tier-এর মধ্যকার মিল                                                                                                                                                       |
+| `contextAffinity`     | 0.0476        | request-এর context-window-এর প্রয়োজন এবং model-এর context window-এর মধ্যকার affinity                                                                                                                                      |
+| `sessionAvailability` | 0.0476        | এই session-এর জন্য candidate connection-এর OAuth session availability (`getOAuthSessionAvailability()`; non-OAuth connection-গুলোর score 1.0)                                                                              |
 | `connectionDensity`   | 0.0476        | একই provider-এর connection-গুলোর মধ্যে load ছড়িয়ে দেয় (anti-concentration)                                                                                                                                              |
-| `cacheAffinity`       | 0.00          | এই অনুরোধের prompt-cache prefix ইতিমধ্যে ধারণ করার সর্বোচ্চ সম্ভাবনাযুক্ত connection-এর প্রতি Rendezvous-hash affinity (`open-sse/services/combo/promptCacheAffinity.ts`); ডিফল্টভাবে নিষ্ক্রিয় (#8008)                   |
+| `cacheAffinity`       | 0.00          | এই request-এর prompt-cache prefix ইতিমধ্যে ধরে রাখার সর্বোচ্চ সম্ভাবনা থাকা connection-এর প্রতি Rendezvous-hash affinity (`open-sse/services/combo/promptCacheAffinity.ts`); ডিফল্টভাবে নিষ্ক্রিয় (#8008)                 |
 | `resetWindowAffinity` | 0.00          | যেসব connection-এর quota reset window অনুকূল, সেগুলোর প্রতি পক্ষপাত (ডিফল্টভাবে নিষ্ক্রিয়)                                                                                                                                |
-| `quality`             | 0.03          | routing-event quality tracker থেকে প্রাপ্ত feedback-চালিত output-quality signal; observation-বিহীন candidate-গুলো নিরপেক্ষ 0.5 পায়                                                                                        |
-| `reliability`         | 0.00          | দশটি sample-এর ন্যূনতম সীমা সাপেক্ষে ২৪ ঘণ্টার usage history থেকে পর্যবেক্ষিত সফলতার অংশ, `1 - failureRate` (অন্যথায় real-time metrics); observation-বিহীন candidate-গুলোর মান 1.0 হিসেবে গণ্য হয়। ডিফল্টভাবে নিষ্ক্রিয় |
+| `quality`             | 0.03          | routing-event quality tracker থেকে পাওয়া feedback-চালিত output-quality signal; observation-বিহীন candidate-গুলো নিরপেক্ষ 0.5 পায়                                                                                         |
+| `reliability`         | 0.00          | দশটি sample-এর ন্যূনতম সীমার আড়ালে 24 ঘণ্টার usage history থেকে পর্যবেক্ষিত সাফল্যের অংশ, `1 - failureRate` (অন্যথায় real-time metrics); observation-বিহীন candidate-গুলোর মান 1.0 হিসেবে ধরা হয়। ডিফল্টভাবে নিষ্ক্রিয় |
 
-**যোগফল:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0`, যেমনটি `DEFAULT_WEIGHTS`-এ ঘোষিত হয়েছে; ব্যবহারকারী-কনফিগার করা weight-গুলো scoring-এর আগে `normalizeScoringWeights()` দ্বারা একটি distribution-এ পুনরায় স্বাভাবিকীকরণ করা হয়।
+in-memory `quality` tracker (`open-sse/services/routing/quality.ts`) cold restart-এর
+পর খালি থাকে, তাই প্রথম observation না আসা পর্যন্ত প্রতিটি candidate নিরপেক্ষ
+`0.5` score পায়।
+
+> **অপাঠ্য কোটা (#15347)।** কোনো প্রোভাইডারের কোটা ফেচার থাকলেও সেটি পাঠযোগ্য কিছু
+> ফেরত না দিলে (ফেচ ব্যর্থ হওয়া, ক্রেডেনশিয়াল অনুপস্থিত থাকা, শুধু বার্তাভিত্তিক ব্যবহার, অথবা এমন একটি বিকৃত স্ন্যাপশট যেখানে
+> পার্সযোগ্য `windows` নেই এবং সসীম `percentUsed`-ও নেই, যার মধ্যে `percentUsed: null`-ও অন্তর্ভুক্ত), প্রার্থীটি
+> `quota` অক্ষে `0` স্কোর পায় এবং তার চূড়ান্ত স্কোরকে
+> `UNREADABLE_QUOTA_SOFT_DEPRIORITIZE_FACTOR` (0.5, `autoStrategy.ts`) দিয়ে গুণ করা হয়—এটি সংযোগ-স্থিতির শাস্তির
+> মতো একই মৃদু-শাস্তির প্যাটার্ন। ব্যবহারসংক্রান্ত রিড ব্যর্থ হওয়া টেলিমেট্রি সম্পর্কে প্রমাণ,
+> প্রোভাইডার সম্পর্কে নয়; তাই এটি যেকোনো বাস্তব রিডিংয়ের চেয়ে কঠোরভাবে নিচে স্থান পায়, এমনকি নিশ্চিত 100%-ব্যবহৃত
+> রিডিংয়ের চেয়েও, তবে এটিকে কখনোই হার্ড-ব্লক বা উচ্ছেদ করা হয় না। কোনো সীমা নেই এমন প্রোভাইডার `unlimited: true` রিপোর্ট করে এবং
+> পূর্ণ কোটা হিসেবে স্কোর পায়; নিবন্ধিত কোটা ফেচার নেই এমন প্রোভাইডারের কোনো টেলিমেট্রি উৎসই নেই
+> এবং সেটি `100`-এর ডিফল্ট মান বজায় রাখে।
+
+**যোগফল:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0`, যেমনটি `DEFAULT_WEIGHTS`-এ ঘোষণা করা হয়েছে; স্কোরিংয়ের আগে ব্যবহারকারী-কনফিগার করা ওজনগুলোকে `normalizeScoringWeights()` একটি বণ্টনে পুনঃস্বাভাবিকীকরণ করে।
 
 ## মোড প্যাকসমূহ
 

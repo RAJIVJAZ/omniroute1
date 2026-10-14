@@ -194,7 +194,7 @@ Consulte [#7992](https://github.com/diegosouzapw/OmniRoute/issues/7992) e [#7111
 
 ## Como Funciona (Combos Automáticos Persistidos)
 
-O Mecanismo de Combo Automático seleciona dinamicamente o melhor provedor/modelo para cada solicitação usando uma **função de pontuação de 16 fatores** (definida em `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). A soma dos pesos padrão é `1.0`; pesos personalizados são renormalizados por `normalizeScoringWeights()`. Dois dos dezesseis — `cacheAffinity` e `resetWindowAffinity` — têm peso padrão `0`; `reliability` tem `0` em `DEFAULT_WEIGHTS`, mas `0.03` nos pacotes genéricos e `0.04` em `reliability-first`, enquanto `quality` tem `0.02` nos pacotes (`0.03` em `quality-first`): eles ainda são calculados para cada candidato, e `cacheAffinity` condiciona a desduplicação do cache de prompts fora da pontuação; portanto, os fatores com padrão zero simplesmente não influenciam por padrão, enquanto os pacotes influenciam.
+O Mecanismo de Combo Automático seleciona dinamicamente o melhor provedor/modelo para cada solicitação usando uma **função de pontuação com 16 fatores** (definida em `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). A soma dos pesos padrão é `1.0`; pesos personalizados são renormalizados por `normalizeScoringWeights()`. Dois dos dezesseis — `cacheAffinity` e `resetWindowAffinity` — têm peso padrão `0`; `reliability` tem `0` em `DEFAULT_WEIGHTS`, mas `0.03` nos pacotes genéricos e `0.04` em `reliability-first`, enquanto `quality` tem `0.02` nos pacotes (`0.03` em `quality-first`): eles ainda são calculados para cada candidato, e `cacheAffinity` controla a desduplicação do cache de prompts fora da pontuação; portanto, os fatores com valor padrão zero simplesmente não influenciam a decisão por padrão, enquanto nos pacotes eles influenciam.
 
 ![Pontuação de 16 fatores do Combo Automático](../diagrams/exported/auto-combo-scoring.svg)
 
@@ -202,10 +202,10 @@ O Mecanismo de Combo Automático seleciona dinamicamente o melhor provedor/model
 
 | Fator                 | Peso Padrão | Descrição                                                                                                                                                                                                                                 |
 | :-------------------- | :---------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `quota`               | 0.1429      | Margem restante de cota/limite de taxa [0..1]                                                                                                                                                                                             |
+| `quota`               | 0.1429      | Cota restante / margem do limite de requisições [0..1]                                                                                                                                                                                    |
 | `health`              | 0.1605      | Pontuação de integridade do disjuntor (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                                                               |
 | `costInv`             | 0.1429      | Inverso do custo **combinado** (60% do preço dos tokens de entrada + 40% do preço dos tokens de saída, normalizado) — mais barato = pontuação mais alta                                                                                   |
-| `latencyInv`          | 0.1143      | Latência p95 inversa normalizada em relação ao pool — mais rápido = pontuação mais alta                                                                                                                                                   |
+| `latencyInv`          | 0.1143      | Inverso da latência p95 normalizada em relação ao pool — mais rápido = pontuação mais alta                                                                                                                                                |
 | `taskFit`             | 0.0762      | Adequação ao tipo de tarefa (programação, revisão, planejamento, análise, depuração, documentação)                                                                                                                                        |
 | `stability`           | 0.0476      | Estabilidade baseada na variância do desvio padrão da latência — um candidato cujo tempo de resposta oscila recebe uma pontuação menor                                                                                                    |
 | `tierPriority`        | 0.0476      | Prioridade do nível da conta — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                                                               |
@@ -213,13 +213,29 @@ O Mecanismo de Combo Automático seleciona dinamicamente o melhor provedor/model
 | `specificityMatch`    | 0.0476      | Correspondência entre a especificidade da solicitação (indicação do manifesto) e o nível do modelo                                                                                                                                        |
 | `contextAffinity`     | 0.0476      | Afinidade entre a necessidade de janela de contexto da solicitação e a janela de contexto do modelo                                                                                                                                       |
 | `sessionAvailability` | 0.0476      | Disponibilidade da sessão OAuth da conexão candidata para esta sessão (`getOAuthSessionAvailability()`; conexões que não usam OAuth recebem pontuação 1.0)                                                                                |
-| `connectionDensity`   | 0.0476      | Distribui a carga entre conexões do mesmo provedor (anticconcentração)                                                                                                                                                                    |
-| `cacheAffinity`       | 0.00        | Afinidade de hash de rendezvous com a conexão que provavelmente já contém o prefixo do cache de prompts desta solicitação (`open-sse/services/combo/promptCacheAffinity.ts`); desativada por padrão (#8008)                               |
-| `resetWindowAffinity` | 0.00        | Tendência a favorecer conexões cuja janela de redefinição de cota seja favorável (desativada por padrão)                                                                                                                                  |
+| `connectionDensity`   | 0.0476      | Distribui a carga entre conexões do mesmo provedor (anticonsentração)                                                                                                                                                                     |
+| `cacheAffinity`       | 0.00        | Afinidade de hash rendezvous com a conexão que provavelmente já contém o prefixo do cache de prompts desta solicitação (`open-sse/services/combo/promptCacheAffinity.ts`); desativada por padrão (#8008)                                  |
+| `resetWindowAffinity` | 0.00        | Favorece conexões cuja janela de redefinição da cota seja vantajosa (desativado por padrão)                                                                                                                                               |
 | `quality`             | 0.03        | Sinal de qualidade da saída orientado por feedback, proveniente do rastreador de qualidade de eventos de roteamento; candidatos sem observações recebem um valor neutro de 0.5                                                            |
-| `reliability`         | 0.00        | Proporção de sucessos observada, `1 - failureRate`, com base em 24h de histórico de uso e um mínimo de dez amostras (caso contrário, métricas em tempo real); candidatos sem observações são considerados como 1.0. Desativada por padrão |
+| `reliability`         | 0.00        | Proporção de sucessos observada, `1 - failureRate`, com base em 24h de histórico de uso e um mínimo de dez amostras (caso contrário, são usadas métricas em tempo real); candidatos sem observações apresentam 1.0. Desativado por padrão |
 
-**Soma:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0`, conforme declarado em `DEFAULT_WEIGHTS`; pesos configurados pelo usuário são renormalizados em uma distribuição por `normalizeScoringWeights()` antes do cálculo da pontuação.
+O rastreador `quality` em memória (`open-sse/services/routing/quality.ts`) fica vazio
+após uma reinicialização a frio; portanto, cada candidato recebe uma pontuação neutra de `0.5` até que
+as primeiras observações sejam registradas.
+
+> **Cota ilegível (#15347).** Quando um provedor tem um coletor de cota, mas ele não retorna nada
+> legível (falha na busca, credenciais ausentes, uso apenas com mensagem ou um snapshot malformado sem
+> `windows` analisáveis e sem um `percentUsed` finito, incluindo `percentUsed: null`), o candidato
+> obtém pontuação `0` no eixo `quota`, e sua pontuação final é multiplicada por
+> `UNREADABLE_QUOTA_SOFT_DEPRIORITIZE_FACTOR` (0.5, `autoStrategy.ts`), seguindo o mesmo padrão de
+> penalização branda da penalidade de status da conexão. Uma falha na leitura do uso é uma evidência
+> sobre a telemetria, não sobre o provedor; portanto, ela fica estritamente abaixo de qualquer leitura
+> real, incluindo uma leitura confirmada de 100% de uso, mas nunca é bloqueada de forma rígida nem
+> removida. Um provedor sem limite informa `unlimited: true` e recebe pontuação de cota total; um
+> provedor sem um coletor de cota registrado não tem nenhuma fonte de telemetria e mantém o valor
+> padrão de `100`.
+
+**Soma:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0`, conforme declarado em `DEFAULT_WEIGHTS`; os pesos configurados pelo usuário são renormalizados em uma distribuição por `normalizeScoringWeights()` antes da pontuação.
 
 ## Pacotes de modo
 

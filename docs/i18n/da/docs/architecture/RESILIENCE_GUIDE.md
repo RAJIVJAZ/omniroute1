@@ -345,23 +345,23 @@ _låsningstilstand_ er midlertidig.
 
 ---
 
-## 4. Samtidighedskontrol for kvotedeling (v3.8.36)
+## 4. Samtidighedsstyring for kvotedeling (v3.8.36)
 
 Abonnementskonti (GLM, MiniMax osv.) accepterer ofte kun ~1–3 samtidige
-anmodninger; overskridelse af dette udløser 429-fejl og nedkølingsperioder. Dette er særligt kritisk ved
-**kvotedelingskombinationer** (`qtSd/…`), hvor flere API-nøgler deler én opstrømskonto.
-Tre lag forhindrer, at en delt konto oversvømmes.
+anmodninger; overskridelse af dette udløser 429-fejl og afkølingsperioder. Dette er særligt udtalt ved
+**kvotedelingskombinationer** (`qtSd/…`), hvor flere API-nøgler deler én upstream-
+konto. Tre lag forhindrer, at en delt konto bliver oversvømmet.
 
 ### Samtidighedsgrænse pr. forbindelse (`max_concurrent`)
 
-Hver udbyderforbindelse kan angive en øvre grænse via `max_concurrent`
-(`provider_connections.max_concurrent`, som indstilles i forbindelsesdialogen/API'en/databasen).
-Lad den være tom for ingen grænse. Dette er den primære indstilling, som styrer serialiseringslaget
-nedenfor — indstil den til kontoens faktiske samtidighed (f.eks. GLM ~1, MiniMax ~2).
+Hver udbyderforbindelse kan angive en øvre `max_concurrent`-grænse
+(`provider_connections.max_concurrent`, indstillet i forbindelsesdialogen/API'en/databasen).
+Lad den være tom for ingen grænse. Dette er den eneste indstilling, der styrer serialiseringslaget
+nedenfor — indstil den til kontoens reelle samtidighed (f.eks. GLM ~1, MiniMax ~2).
 
 ### Samtidighedsgrænser pr. model (`modelConcurrency`)
 
-En forbindelse kan desuden angive præcise øvre grænser for samtidighed pr. model
+En forbindelse kan desuden angive præcise samtidighedsgrænser pr. model
 i sit `rateLimitOverrides`-map:
 
 ```json
@@ -377,28 +377,27 @@ Indstil det i forbindelsesdialogen (**Tilsidesættelser af hastighedsgrænser �
 pr. model**, én `model=cap` pr. linje) eller via
 `PATCH /api/providers/[id]` med den samme JSON-struktur. Nøglesemantik:
 
-- **For hele forbindelsen kontra modelspecifik:** `maxConcurrent` forbliver den delte
-  øvre grænse for hele forbindelsen. Når begge gælder, erhverves begge porte
-  atomisk i den samme sammensatte port
-  (`global → provider → account → model`); i praksis gælder den
-  strengeste relevante grænse.
-- **Eksakt match af modelnøgle:** nøglen er den modelstreng, der videregives til
-  eksekveringskomponenten efter opløsning af routingen — normalt det rene opstrømsmodel-id
-  (`glm-5`), ikke et alias på klientsiden i formatet `provider/model` (`zai/glm-5` matcher
-  ikke `glm-5`). Værdierne er positive heltalsgrænser for samtidige anmodninger.
-- **Lokal køplacering, ingen automatisk registrering:** overskydende anmodninger placeres lokalt i kø med den
+- **Forbindelsesdækkende kontra modelspecifik:** `maxConcurrent` forbliver den delte
+  øvre grænse for hele forbindelsen. Når begge gælder, erhverves begge gates
+  atomisk i den samme sammensatte gate
+  (`global → provider → account → model`); den effektive adfærd følger den
+  strengeste gældende grænse.
+- **Præcist match af modelnøgle:** Nøglen er den modelstreng, der sendes til
+  eksekveringskomponenten efter routingopløsning — normalt det rene upstream-model-id
+  (`glm-5`), ikke et `provider/model`-alias på klientsiden (`zai/glm-5` matcher ikke
+  `glm-5`). Værdier er positive heltalsgrænser for samtidige anmodninger.
+- **Lokal kø, ingen registrering:** Overskydende anmodninger sættes i lokal kø med den
   eksisterende kø-/timeout-semantik (typede adgangsfejl af typen `SEMAPHORE_TIMEOUT` /
-  `SEMAPHORE_QUEUE_FULL`). OmniRoute registrerer eller
-  udleder ikke opstrømspolitikken — det håndhæver præcis de grænser, som operatøren
-  har konfigureret. En mættet modelport deaktiverer aldrig udbyderen og
-  opretter aldrig en permanent modellåsning; opstrøms 429-/nedkølings-/fallback-adfærd
-  forbliver den sidste fejlsikring.
-- **Omfang pr. forbindelse og pr. proces:** grænser gælder pr. databaseforbindelse
-  og opbevares i hukommelsen, så to forbindelser, der genbruger den samme opstrøms-API-nøgle,
+  `SEMAPHORE_QUEUE_FULL`). OmniRoute registrerer eller udleder ikke upstream-politikken
+  — den håndhæver præcis de grænser, som operatøren har konfigureret.
+  En mættet model-gate deaktiverer aldrig udbyderen og opretter aldrig en permanent
+  modelblokering; upstream-adfærd for 429/afkøling/fallback forbliver sidste sikkerhedsnet ved fejl.
+- **Omfang pr. forbindelse og pr. proces:** Grænser gælder pr. databaseforbindelse
+  og opbevares i hukommelsen, så to forbindelser, der genbruger den samme upstream-API-nøgle,
   ikke koordinerer med hinanden.
-- **Ikke konfigureret betyder uændret:** hvis mappet udelades (eller
-  dashboardfeltet efterlades tomt), tilføjes ingen modelport. Eksempelkonfiguration uden
-  at antage nogen universel udbydergrænse:
+- **Ikke konfigureret betyder uændret:** Udeladelse af mappet (eller en tom
+  feltværdi i kontrolpanelet) tilføjer ingen model-gate. Eksempel på konfiguration uden
+  at fastslå en universel udbydergrænse:
 
 ```text
 glm-5=1
@@ -409,27 +408,38 @@ glm-4.7=3
 
 Når en kvotedelingsdispatch målrettes mod en forbindelse, der angiver en positiv
 `max_concurrent`, serialiseres samtidige anmodninger til den pågældende **konto** gennem en
-semafor pr. forbindelse (nøgle `qsconn:<connectionId>`): overskydende anmodninger **venter i
-køen** i stedet for at oversvømme kontoen. Den er **fejlåben** — en mættet
+semafor pr. forbindelse (nøgle `qsconn:<connectionId>`): Overskydende anmodninger **venter i
+køen** i stedet for at oversvømme kontoen. Den er **fail-open** — en mættet
 kø eller timeout fortsætter uden en plads i stedet for nogensinde at afvise en anmodning,
-der kan dispatches. Slå den til eller fra under **Indstillinger → Robusthed → Samtidighed
-pr. forbindelse for kvotedeling** (`resilienceSettings.quotaShareConcurrencyLimit.enabled`, som standard
-slået til). Uden en `max_concurrent`-grænse er adfærden uændret.
+der kan dispatches. Slå funktionen til eller fra under **Indstillinger → Robusthed → Samtidighed
+pr. forbindelse for kvotedeling** (`resilienceSettings.quotaShareConcurrencyLimit.enabled`, som
+standard slået til). Uden en `max_concurrent`-grænse er adfærden uændret.
 
-> Routingporten for kvotedeling (`selectQuotaShareTarget`, DRR + P2C) er selv
-> fejlåben og _nedprioriterer_ kun en forbindelse, der har nået grænsen — med en
-> pulje med én forbindelse kan den ikke sætte en hård grænse, så det er denne semafor, der rent faktisk
-> begrænser oversvømmelsen.
+> Routing-gaten for kvotedeling (`selectQuotaShareTarget`, DRR + P2C) er selv
+> fail-open og _nedprioriterer_ kun en forbindelse, der har nået sin grænse — med en
+> pulje bestående af én forbindelse kan den ikke håndhæve en fast grænse, så det er denne semafor,
+> der rent faktisk inddæmmer oversvømmelsen.
 
-### Nedkølingsbevidst gentagelse for kombinationer
+### Afkølingsbevidst genforsøg for kombinationer
 
-For hver kombinationsstrategi (når den er aktiveret) vil en anmodning, der ellers ville udløse en 429-fejl
-på grund af en KORT midlertidig nedkølingsperiode, vente den ud og blive dispatches igen i stedet for
-at returnere 429-fejlen — dette dækker TPM-/RPM-vinduer i Gemini-klassen (~60s retry-after)
-på kombinationer med flere modeller, f.eks. når begge mål i en kombination med 2 modeller rammer en hastighedsgrænse
-pr. model. Begrænset af `comboCooldownWait` (`enabled`, `maxWaitMs`, `maxAttempts`,
-`budgetMs`) under **Indstillinger → Robusthed**. Den venter aldrig ved `quota_exhausted`
+For alle kombinationsstrategier (når funktionen er aktiveret) vil en anmodning, der ellers
+ville resultere i en 429-fejl på grund af en KORT, midlertidig afkølingsperiode, vente den ud og
+blive dispatch'et igen i stedet for at returnere 429-fejlen — dette dækker TPM/RPM-vinduer
+i Gemini-klassen (~60s retry-after) for kombinationer med flere modeller, f.eks. når begge
+mål i en kombination med 2 modeller rammer en hastighedsgrænse pr. model.
+Begrænses af `comboCooldownWait` (`enabled`, `maxWaitMs`, `maxAttempts`,
+`budgetMs`) under **Indstillinger → Robusthed**. Den venter aldrig på `quota_exhausted`
 (låst indtil midnat) eller årsager relateret til godkendelse/ikke fundet.
+
+Den samme gate dækker tilfældet før dispatch (#16319): Når alle mål i en
+kombination springes over, før der foretages noget forsøg, fordi deres model befinder sig
+i en kortvarig, midlertidig blokering, venter nul-forsøgsstien på, at blokeringen udløber,
+under de samme grænser og dispatcher igen i stedet for at svare med en
+`503 ALL_TARGETS_SKIPPED` uden oplysninger. Når ventning ikke er tilladt (grænse,
+forsøgsantal eller budget er opbrugt, eller funktionen er slået fra), opgraderes det afsluttende svar til
+`429 rate_limit_error` med `retry_after` / `reset_at` fra det tidligste
+udløb af en midlertidig blokering; blokeringer relateret til kvote, godkendelse og ikke fundet
+bevarer 503-svaret uden oplysninger.
 
 ---
 

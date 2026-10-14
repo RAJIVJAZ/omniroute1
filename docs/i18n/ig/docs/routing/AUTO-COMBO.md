@@ -185,34 +185,49 @@ Nsogbu abụọ a na-ahụkarị:
 
 Lee [#7992](https://github.com/diegosouzapw/OmniRoute/issues/7992) na [#7111](https://github.com/diegosouzapw/OmniRoute/issues/7111) maka mgbagwoju anya mbụ nke akwụkwọ a na-akọwa.
 
-## Otu O Si Arụ Ọrụ (Auto-Combos Echekwara)
+## Otu O Si Arụ Ọrụ (Ngwakọta-Akpaaka Ndị Echekwara)
 
-Auto-Combo Engine na-ahọrọ provider/model kacha mma n'ụzọ na-agbanwe agbanwe maka arịrịọ ọ bụla site n'iji **ọrụ inye akara nwere ihe 16** (akọwapụtara na `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). Nchịkọta arọ ndabara bụ `1.0`; `normalizeScoringWeights()` na-emegharị arọ ndị ahaziri ka nchịkọta ha kwekọọ. Abụọ n'ime ihe iri na isii ahụ — `cacheAffinity` na `resetWindowAffinity` — nwere arọ ndabara nke `0`; `reliability` nwere `0` na `DEFAULT_WEIGHTS` mana o nwere `0.03` na ngwugwu izugbe yana `0.04` na `reliability-first`, ebe `quality` nwere `0.02` na ngwugwu (`0.03` na `quality-first`): a ka na-agbakọ ha maka onye ndoro-ndoro ọ bụla, `cacheAffinity` na-achịkwa iwepụ oyiri prompt-cache n'èzí akara ahụ, ya mere ihe ndị nwere efu dịka ndabara anaghị atụ vootu na ndabara, ebe ngwugwu na-eme ya.
+Auto-Combo Engine na-ahọrọ provider/model kacha mma n'ụzọ na-agbanwe agbanwe maka arịrịọ ọ bụla site n'iji **ọrụ inye akara nwere ihe 16** (akọwapụtara na `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). Mkpokọta arọ ndabara bụ `1.0`; `normalizeScoringWeights()` na-emegharị arọ ahaziri iche ka ha kwekọọ. Abụọ n'ime ihe iri na isii ahụ — `cacheAffinity` na `resetWindowAffinity` — nwere arọ ndabara nke `0`; `reliability` nwere `0` na `DEFAULT_WEIGHTS` mana ọ nwere `0.03` na ngwugwu izugbe yana `0.04` na `reliability-first`, ebe `quality` nwere `0.02` na ngwugwu (`0.03` na `quality-first`): a ka na-agbakọ ha maka candidate ọ bụla, `cacheAffinity` na-achịkwa mwepụ prompt-cache ndị yiri ibe ha n'èzí akara ahụ, ya mere ihe ndị nwere arọ ndabara efu anaghị etinye aka na ndabara, ebe ngwugwu na-etinye aka.
 
-![Ntụnye akara Auto-Combo nwere ihe 16](../diagrams/exported/auto-combo-scoring.svg)
+![Inye akara Auto-Combo nwere ihe 16](../diagrams/exported/auto-combo-scoring.svg)
 
-> Isi mmalite: [diagrams/auto-combo-scoring.mmd](../diagrams/auto-combo-scoring.mmd) (jiri `npm run docs:render-diagrams` mepụtaghachi ya). Aha faịlụ ahụ sitere n'akụkọ ihe mere eme; isi mmalite na eserese emepụtara na-egosi ihe 16 niile ekwuputara na `DEFAULT_WEIGHTS`.
+> Isi mmalite: [diagrams/auto-combo-scoring.mmd](../diagrams/auto-combo-scoring.mmd) (jiri `npm run docs:render-diagrams` mepụtaghachi ya). Aha faịlụ ahụ sitere n'akụkọ ihe mere eme; isi mmalite na eserese emepụtara na-egosi ihe 16 niile ekwupụtara na `DEFAULT_WEIGHTS`.
 
-| Ihe                   | Arọ Ndabara | Nkọwa                                                                                                                                                                                                                               |
-| :-------------------- | :---------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `quota`               | 0.1429      | Quota fọdụrụ / ohere fọdụrụ tupu oke ọnụego [0..1]                                                                                                                                                                                  |
-| `health`              | 0.1605      | Akara ahụike sitere na circuit breaker (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                                                        |
-| `costInv`             | 0.1429      | Mgbanwe ntụgharị nke ọnụahịa **agwakọtara** (60% ọnụahịa token ntinye + 40% ọnụahịa token mmepụta, nke ahazirila) — ọnụ ala karịa = akara dị elu karịa                                                                              |
-| `latencyInv`          | 0.1143      | Mgbanwe ntụgharị nke latency p95 ahazirila ka ọ kwekọọ na pool — ngwa ngwa karịa = akara dị elu karịa                                                                                                                               |
-| `taskFit`             | 0.0762      | Nkwekọrịta na ụdị ọrụ (ide koodu, ntụle, nhazi, nyocha, idozi njehie, akwụkwọ)                                                                                                                                                      |
-| `stability`           | 0.0476      | Nkwụsi ike dabere na variance sitere na standard deviation nke latency — onye ndoro-ndoro oge nzaghachi ya na-agbanwe nke ukwuu na-enweta akara dị ala karịa                                                                        |
-| `tierPriority`        | 0.0476      | Mkpa ọkwa akaụntụ — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                                                                    |
-| `tierAffinity`        | 0.0476      | Mmekọrịta dị n'etiti ọkwa onye ndoro-ndoro na ọkwa manifest tụrụ aro                                                                                                                                                                |
-| `specificityMatch`    | 0.0476      | Nkwekọrịta dị n'etiti etu arịrịọ siri pụta ihe kpọmkwem (ntụnye manifest) na ọkwa model                                                                                                                                             |
-| `contextAffinity`     | 0.0476      | Mmekọrịta dị n'etiti mkpa context-window nke arịrịọ ahụ na context window nke model                                                                                                                                                 |
-| `sessionAvailability` | 0.0476      | Nnweta nnọkọ OAuth nke njikọ onye ndoro-ndoro maka nnọkọ a (`getOAuthSessionAvailability()`; njikọ ndị na-abụghị OAuth na-enweta akara 1.0)                                                                                         |
-| `connectionDensity`   | 0.0476      | Na-ekesa ibu n'etiti njikọ nke otu provider (mgbochi mkpokọta)                                                                                                                                                                      |
-| `cacheAffinity`       | 0.00        | Mmekọrịta rendezvous-hash n'ebe njikọ o yikarịrị ka ọ na-ejidelarị prefix prompt-cache nke arịrịọ a nọ (`open-sse/services/combo/promptCacheAffinity.ts`); agbanyụrụ na ndabara (#8008)                                             |
-| `resetWindowAffinity` | 0.00        | Nkwado maka njikọ ndị windo nrụgharị quota ha dị mma (agbanyụrụ na ndabara)                                                                                                                                                         |
-| `quality`             | 0.03        | Ihe mgbaàmà ogo mmepụta nke nzaghachi ndị ọrụ na-achịkwa, sitere na onye na-esochi ogo routing-event; ndị ndoro-ndoro na-enweghị nlele na-enweta 0.5 na-anọpụ iche                                                                  |
-| `reliability`         | 0.00        | Oke ihe ịga nke ọma a hụrụ, `1 - failureRate`, sitere na akụkọ ojiji awa 24 n'azụ oke kacha nta nke sample iri (ma ọ bụghị ya, a na-eji metrics ozugbo); a na-ewere ndị ndoro-ndoro na-enweghị nlele dịka 1.0. Agbanyụrụ na ndabara |
+| Ihe                   | Arọ Ndabara | Nkọwa                                                                                                                                                                                                                       |
+| :-------------------- | :---------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `quota`               | 0.1429      | Oke ojiji fọdụrụ / ohere fọdụrụ tupu oke ọnụego [0..1]                                                                                                                                                                      |
+| `health`              | 0.1605      | Akara ahụike sitere na circuit breaker (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                                                |
+| `costInv`             | 0.1429      | Ụgwọ **agwakọtara** n'ụzọ mgbagwoju anya (60% ntinye + 40% ọnụahịa token mmepụta, emeziri ka ọ kwekọọ) — ọnụ ala karịa = akara dị elu                                                                                       |
+| `latencyInv`          | 0.1143      | Latency p95 n'ụzọ mgbagwoju anya, emeziri ka ọ kwekọọ na pool — ọsọ karịa = akara dị elu                                                                                                                                    |
+| `taskFit`             | 0.0762      | Ndabara maka ụdị ọrụ (coding, review, planning, analysis, debugging, docs)                                                                                                                                                  |
+| `stability`           | 0.0476      | Nkwụsi ike dabere na variance sitere na standard deviation nke latency — candidate nke oge nzaghachi ya na-agbanwe nke ukwuu na-enweta akara dị ala                                                                         |
+| `tierPriority`        | 0.0476      | Ihe mbụ nke account-tier — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                                                     |
+| `tierAffinity`        | 0.0476      | Mmekọrịta dị n'etiti tier nke candidate na tier manifest tụrụ aro                                                                                                                                                           |
+| `specificityMatch`    | 0.0476      | Ndakọrịta dị n'etiti etu arịrịọ si bụrụ kpọmkwem (ntụnye manifest) na tier nke model                                                                                                                                        |
+| `contextAffinity`     | 0.0476      | Mmekọrịta dị n'etiti mkpa context-window nke arịrịọ na context window nke model                                                                                                                                             |
+| `sessionAvailability` | 0.0476      | Nnweta session OAuth nke njikọ candidate maka session a (`getOAuthSessionAvailability()`; njikọ ndị na-abụghị OAuth na-enweta akara 1.0)                                                                                    |
+| `connectionDensity`   | 0.0476      | Na-ekesa ibu n'etiti njikọ nke otu provider (mgbochi nchịkọta n'otu ebe)                                                                                                                                                    |
+| `cacheAffinity`       | 0.00        | Mmekọrịta rendezvous-hash n'ebe njikọ nwere ike ịnweworị prefix prompt-cache nke arịrịọ a dị (`open-sse/services/combo/promptCacheAffinity.ts`); agbanyụrụ na ndabara (#8008)                                               |
+| `resetWindowAffinity` | 0.00        | Ọchịchọ ịkwado njikọ ndị window mmegharị quota ha dị mma (agbanyụrụ na ndabara)                                                                                                                                             |
+| `quality`             | 0.03        | Ihe ngosi ogo mmepụta sitere na nzaghachi site na routing-event quality tracker; candidate ndị na-enweghị nlele na-enweta akara etiti nke 0.5                                                                               |
+| `reliability`         | 0.00        | Oke ihe ịga nke ọma a hụrụ, `1 - failureRate`, sitere n'akụkọ ojiji nke awa 24 n'okpuru oke kacha nta nke sample iri (ma ọ bụghị ya, metrics ozugbo); candidate ndị na-enweghị nlele na-agụ dị ka 1.0. Agbanyụrụ na ndabara |
 
-**Nchịkọta:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0` dịka ekwuputara na `DEFAULT_WEIGHTS`; `normalizeScoringWeights()` na-emegharị arọ ndị onye ọrụ haziri ka ha bụrụ nkesa tupu inye akara.
+Tracker `quality` dị na ebe nchekwa (`open-sse/services/routing/quality.ts`) na-adị efu
+mgbe nrụgharị oyi gasịrị, ya mere candidate ọ bụla na-enweta akara etiti nke `0.5` ruo mgbe
+nlele ndị mbụ batara.
+
+> **Oke ojiji anaghị agụ agụ (#15347).** Mgbe onye na-eweta ọrụ nwere ngwa na-eweta oke ojiji mana ọ naghị eweghachi ihe ọ bụla
+> enwere ike ịgụ (nweta dara ada, nzere njirimara na-efu, ojiji nwere naanị ozi, ma ọ bụ snapshot na-adịghị n’usoro nke na-enweghị
+> `windows` enwere ike ịtụgharị ma na-enweghị `percentUsed` nwere uru nwere oke, gụnyere `percentUsed: null`), onye a na-atụle
+> na-enweta akara `0` n’akụkụ `quota`, a na-amụbakwa akara ikpeazụ ya site na
+> `UNREADABLE_QUOTA_SOFT_DEPRIORITIZE_FACTOR` (0.5, `autoStrategy.ts`), nke bụ otu usoro ntaramahụhụ dị nro
+> dịka ntaramahụhụ ọnọdụ njikọ. Ọgụgụ ojiji dara ada bụ ihe akaebe gbasara telemetry,
+> ọ bụghị gbasara onye na-eweta ọrụ, ya mere ọ na-anọ n’ọkwa dị n’okpuru ọgụgụ ọ bụla bụ eziokwu, gụnyere nke egosiri na ejirila
+> 100% ya, mana anaghị egbochi ya kpamkpam ma ọ bụ chụpụ ya. Onye na-eweta ọrụ na-enweghị oke na-akọ `unlimited: true` ma
+> na-enweta akara dịka oke ojiji zuru ezu; onye na-eweta ọrụ na-enweghị ngwa na-eweta oke ojiji edebanyere aha enweghị isi iyi telemetry ma ọlị
+> ma na-edobe uru ndabara nke `100`.
+
+**Mkpokọta:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0` dịka ekwuputara na `DEFAULT_WEIGHTS`; a na-emegharị ịdị arọ ndị onye ọrụ haziri ka ha bụrụ nkesa site na `normalizeScoringWeights()` tupu enye akara.
 
 ## Ngwugwu Ọnọdụ
 

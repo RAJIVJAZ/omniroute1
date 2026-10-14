@@ -167,34 +167,49 @@ Kaks tavalist komistuskivi:
 
 Vaata [#7992](https://github.com/diegosouzapw/OmniRoute/issues/7992) ja [#7111](https://github.com/diegosouzapw/OmniRoute/issues/7111) selle algse segaduse kohta, mida see dokumenteerib.
 
-## Kuidas see töötab (püsivad automaatkombod)
+## Kuidas see töötab (püsivad automaatkombinatsioonid)
 
-Auto-Combo mootor valib iga päringu jaoks dünaamiliselt parima teenusepakkuja/mudeli, kasutades **16 teguriga hindamisfunktsiooni** (määratletud failis `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). Vaikekaalude summa on `1.0`; kohandatud kaalud normaliseeritakse uuesti funktsiooniga `normalizeScoringWeights()`. Kuueteistkümnest tegurist kahel — `cacheAffinity` ja `resetWindowAffinity` — on vaikimisi kaal `0`; teguril `reliability` on `DEFAULT_WEIGHTS`-is kaal `0`, kuid üldistes pakettides `0.03` ja paketis `reliability-first` `0.04`, ning teguril `quality` on pakettides kaal `0.02` (paketis `quality-first` `0.03`): need arvutatakse siiski iga kandidaadi jaoks ning `cacheAffinity` juhib väljaspool punktisummat viipade vahemälu duplikaatide eemaldamist, seega nulliga vaikekaaluga tegurid lihtsalt vaikimisi hindamises ei osale, küll aga osalevad paketid.
+Automaatkombinatsioonide mootor valib iga päringu jaoks dünaamiliselt parima teenusepakkuja/mudeli, kasutades **16 teguriga hindamisfunktsiooni** (määratletud failis `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). Vaikekaalude summa on `1.0`; kohandatud kaalud normaliseeritakse uuesti funktsiooniga `normalizeScoringWeights()`. Kuueteistkümnest tegurist kahel — `cacheAffinity` ja `resetWindowAffinity` — on vaikekaal `0`; teguri `reliability` kaal on väärtuses `DEFAULT_WEIGHTS` `0`, kuid üldistes pakettides `0.03` ja paketis `reliability-first` `0.04`, ning teguri `quality` kaal on pakettides `0.02` (paketis `quality-first` `0.03`): neid arvutatakse siiski iga kandidaadi puhul ning `cacheAffinity` juhib väljaspool punktisummat viiba vahemälu deduplikatsiooni, mistõttu nullkaaluga vaiketegurid vaikimisi hinnangut ei mõjuta, paketid aga küll.
 
-![Auto-Combo 16 teguriga hindamine](../diagrams/exported/auto-combo-scoring.svg)
+![Automaatkombinatsiooni 16 teguriga hindamine](../diagrams/exported/auto-combo-scoring.svg)
 
-> Allikas: [diagrams/auto-combo-scoring.mmd](../diagrams/auto-combo-scoring.mmd) (taasloomiseks kasutage käsku `npm run docs:render-diagrams`). Failinimi on ajalooline; lähtefail ja renderdatud diagramm näitavad kõiki 16 tegurit, mis on deklareeritud objektis `DEFAULT_WEIGHTS`.
+> Allikas: [diagrams/auto-combo-scoring.mmd](../diagrams/auto-combo-scoring.mmd) (genereerige uuesti käsuga `npm run docs:render-diagrams`). Failinimi on ajalooline; lähtekood ja renderdatud diagramm näitavad kõiki 16 tegurit, mis on deklareeritud väärtuses `DEFAULT_WEIGHTS`.
 
-| Tegur                 | Vaikekaal | Kirjeldus                                                                                                                                                                                                                  |
-| :-------------------- | :-------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `quota`               | 0.1429    | Allesjäänud kvoot / kiirusepiirangu varu [0..1]                                                                                                                                                                            |
-| `health`              | 0.1605    | Kaitselüliti seisundiskoor (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                                                           |
-| `costInv`             | 0.1429    | **Kombineeritud** kulu pöördväärtus (60% sisend- + 40% väljundtokeni hinnast, normaliseeritud) — odavam = kõrgem skoor                                                                                                     |
-| `latencyInv`          | 0.1143    | Kogumi suhtes normaliseeritud p95 latentsuse pöördväärtus — kiirem = kõrgem skoor                                                                                                                                          |
-| `taskFit`             | 0.0762    | Sobivus ülesande tüübiga (programmeerimine, ülevaatus, plaanimine, analüüs, silumine, dokumentatsioon)                                                                                                                     |
-| `stability`           | 0.0476    | Latentsuse standardhälbel põhinev stabiilsus — kandidaadi skoor on madalam, kui tema reageerimisaeg tugevalt kõigub                                                                                                        |
-| `tierPriority`        | 0.0476    | Kontotaseme prioriteet — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                                                      |
-| `tierAffinity`        | 0.0476    | Sobivus kandidaadi taseme ja manifestis soovitatud taseme vahel                                                                                                                                                            |
-| `specificityMatch`    | 0.0476    | Sobivus päringu spetsiifilisuse (manifesti vihje) ja mudeli taseme vahel                                                                                                                                                   |
-| `contextAffinity`     | 0.0476    | Sobivus päringu kontekstiakna vajaduse ja mudeli kontekstiakna vahel                                                                                                                                                       |
-| `sessionAvailability` | 0.0476    | Kandidaatühenduse OAuth-seansi saadavus selle seansi jaoks (`getOAuthSessionAvailability()`; mitte-OAuth-ühenduste skoor on 1.0)                                                                                           |
-| `connectionDensity`   | 0.0476    | Jaotab koormuse sama teenusepakkuja ühenduste vahel (kontsentratsiooni vältimine)                                                                                                                                          |
-| `cacheAffinity`       | 0.00      | Rendezvous-räsi põhine eelistus ühenduse suhtes, mis tõenäoliselt juba sisaldab selle päringu viibavahemälu prefiksit (`open-sse/services/combo/promptCacheAffinity.ts`); vaikimisi keelatud (#8008)                       |
-| `resetWindowAffinity` | 0.00      | Eelistab ühendusi, mille kvoodi lähtestamise ajavahemik on soodne (vaikimisi keelatud)                                                                                                                                     |
-| `quality`             | 0.03      | Marsruutimissündmuste kvaliteedijälgija tagasisidel põhinev väljundkvaliteedi signaal; vaatlusteta kandidaadid saavad neutraalse väärtuse 0.5                                                                              |
-| `reliability`         | 0.00      | Vaadeldud edukate päringute osakaal, `1 - failureRate`, 24 tunni kasutusajaloost vähemalt kümne näidise olemasolul (vastasel juhul reaalajamõõdikud); vaatlusteta kandidaatide väärtuseks loetakse 1.0. Vaikimisi keelatud |
+| Tegur                 | Vaikekaal | Kirjeldus                                                                                                                                                                                                                 |
+| :-------------------- | :-------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `quota`               | 0.1429    | Järelejäänud kvoot / päringusageduse piirangu varu [0..1]                                                                                                                                                                 |
+| `health`              | 0.1605    | Kaitselülitist saadud seisundiskoor (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                                                 |
+| `costInv`             | 0.1429    | **Kombineeritud** kulu pöördväärtus (60% sisend- + 40% väljundlubade hinnast, normaliseeritud) — odavam = kõrgem skoor                                                                                                    |
+| `latencyInv`          | 0.1143    | Kogumi suhtes normaliseeritud p95 latentsuse pöördväärtus — kiirem = kõrgem skoor                                                                                                                                         |
+| `taskFit`             | 0.0762    | Sobivus ülesande tüübiga (programmeerimine, ülevaatus, planeerimine, analüüs, silumine, dokumentatsioon)                                                                                                                  |
+| `stability`           | 0.0476    | Latentsuse standardhälbest tuletatud dispersioonipõhine stabiilsus — kandidaat, kelle reageerimisaeg tugevalt kõigub, saab madalama skoori                                                                                |
+| `tierPriority`        | 0.0476    | Kontotaseme prioriteet — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                                                     |
+| `tierAffinity`        | 0.0476    | Sobivus kandidaadi taseme ja manifestis soovitatud taseme vahel                                                                                                                                                           |
+| `specificityMatch`    | 0.0476    | Päringu spetsiifilisuse (manifesti vihje) ja mudelitaseme vastavus                                                                                                                                                        |
+| `contextAffinity`     | 0.0476    | Sobivus päringu kontekstiakna vajaduse ja mudeli kontekstiakna vahel                                                                                                                                                      |
+| `sessionAvailability` | 0.0476    | Kandidaatühenduse OAuth-seansi saadavus selle seansi jaoks (`getOAuthSessionAvailability()`; mitte-OAuth-ühendused saavad skooriks 1.0)                                                                                   |
+| `connectionDensity`   | 0.0476    | Jaotab koormuse sama teenusepakkuja ühenduste vahel (kontsentreerumise vältimine)                                                                                                                                         |
+| `cacheAffinity`       | 0.00      | Rendezvous-räsi põhine eelistus ühenduse suhtes, mis kõige tõenäolisemalt juba sisaldab selle päringu viiba vahemälu prefiksit (`open-sse/services/combo/promptCacheAffinity.ts`); vaikimisi keelatud (#8008)             |
+| `resetWindowAffinity` | 0.00      | Eelistab ühendusi, mille kvoodi lähtestamisaken on soodne (vaikimisi keelatud)                                                                                                                                            |
+| `quality`             | 0.03      | Tagasisidepõhine väljundkvaliteedi signaal marsruutimissündmuste kvaliteedijälgijast; vaatlusteta kandidaadid saavad neutraalse väärtuse 0.5                                                                              |
+| `reliability`         | 0.00      | Täheldatud õnnestumiste osakaal `1 - failureRate`, mis põhineb 24 tunni kasutusajalool ja rakendub alates kümnest proovist (vastasel juhul reaalajamõõdikud); vaatlusteta kandidaatide väärtus on 1.0. Vaikimisi keelatud |
 
-**Summa:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0`, nagu on deklareeritud objektis `DEFAULT_WEIGHTS`; kasutaja seadistatud kaalud normaliseeritakse enne hindamist funktsiooniga `normalizeScoringWeights()` uuesti jaotuseks.
+Mälusisene `quality` jälgija (`open-sse/services/routing/quality.ts`) on pärast
+külmkäivitust tühi, mistõttu saab iga kandidaat neutraalse skoori `0.5`, kuni
+saabuvad esimesed vaatlused.
+
+> **Loetamatu kvoot (#15347).** Kui teenusepakkujal on kvoodi hankija, kuid see ei tagasta midagi
+> loetavat (hankimine nurjus, mandaadid puuduvad, kasutusandmed sisaldavad ainult teadet või hetktõmmis on vigane ning selles pole
+> sõelutavaid `windows`-andmeid ega lõplikku `percentUsed`-väärtust, sealhulgas `percentUsed: null`), saab kandidaat
+> `quota`-teljel hindeks `0` ja tema lõplik tulemus korrutatakse teguriga
+> `UNREADABLE_QUOTA_SOFT_DEPRIORITIZE_FACTOR` (0.5, `autoStrategy.ts`), järgides sama leebe karistuse
+> mustrit nagu ühenduse oleku karistus. Kasutusandmete lugemise nurjumine annab teavet telemeetria,
+> mitte teenusepakkuja kohta, mistõttu paigutub see rangelt allapoole kõiki tegelikke näite, sealhulgas kinnitatud 100%
+> kasutust, kuid seda ei blokeerita ega tõrjuta kunagi täielikult. Piiranguta teenusepakkuja teatab `unlimited: true` ja
+> saab kvoodi eest maksimumhinde; teenusepakkujal, kelle jaoks pole registreeritud kvoodi hankijat, puudub telemeetriaallikas täielikult
+> ning talle jääb vaikeväärtus `100`.
+
+**Summa:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0`, nagu on deklareeritud failis `DEFAULT_WEIGHTS`; kasutaja seadistatud kaalud normaliseeritakse funktsiooniga `normalizeScoringWeights()` enne hindamist jaotuseks.
 
 ## Režiimipaketid
 

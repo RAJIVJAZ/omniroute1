@@ -167,34 +167,49 @@ To almindelige faldgruber:
 
 Se [#7992](https://github.com/diegosouzapw/OmniRoute/issues/7992) og [#7111](https://github.com/diegosouzapw/OmniRoute/issues/7111) for den oprindelige forvirring, som dette dokumenterer.
 
-## Sådan fungerer det (lagrede Auto-Combos)
+## Sådan fungerer det (persistente Auto-Combos)
 
-Auto-Combo-motoren vælger dynamisk den bedste udbyder/model til hver anmodning ved hjælp af en **scoringsfunktion med 16 faktorer** (defineret i `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). Standardvægtene summerer til `1.0`; brugerdefinerede vægte normaliseres igen af `normalizeScoringWeights()`. To af de seksten — `cacheAffinity` og `resetWindowAffinity` — har en standardvægt på `0`; `reliability` har `0` i `DEFAULT_WEIGHTS`, men `0.03` i generiske pakker og `0.04` i `reliability-first`, og `quality` har `0.02` i pakker (`0.03` i `quality-first`): De beregnes stadig for hver kandidat, og `cacheAffinity` styrer deduplikering af promptcachen uden for scoren, så faktorerne med standardværdien nul har som udgangspunkt ingen indflydelse, mens de har det i pakkerne.
+Auto-Combo-motoren vælger dynamisk den bedste udbyder/model for hver anmodning ved hjælp af en **scoringsfunktion med 16 faktorer** (defineret i `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). Standardvægtene summerer til `1.0`; brugerdefinerede vægte normaliseres igen af `normalizeScoringWeights()`. To af de seksten — `cacheAffinity` og `resetWindowAffinity` — har en standardvægt på `0`; `reliability` har `0` i `DEFAULT_WEIGHTS`, men `0.03` i generiske pakker og `0.04` i `reliability-first`, mens `quality` har `0.02` i pakker (`0.03` i `quality-first`): De beregnes stadig for hver kandidat, og `cacheAffinity` styrer deduplikering af promptcachen uden for scoren, så faktorerne med standardvægt nul simpelthen ikke påvirker resultatet som standard, mens pakkerne gør.
 
-![Auto-Combo-scoring med 16 faktorer](../diagrams/exported/auto-combo-scoring.svg)
+![Auto-Combo-scoringsfunktion med 16 faktorer](../diagrams/exported/auto-combo-scoring.svg)
 
-> Kilde: [diagrams/auto-combo-scoring.mmd](../diagrams/auto-combo-scoring.mmd) (generér igen via `npm run docs:render-diagrams`). Filnavnet er historisk; kilden og det renderede diagram viser alle 16 faktorer, der er erklæret i `DEFAULT_WEIGHTS`.
+> Kilde: [diagrams/auto-combo-scoring.mmd](../diagrams/auto-combo-scoring.mmd) (generér igen via `npm run docs:render-diagrams`). Filnavnet er historisk; kilden og det renderede diagram viser alle 16 faktorer, der er deklareret i `DEFAULT_WEIGHTS`.
 
-| Faktor                | Standardvægt | Beskrivelse                                                                                                                                                                                                                |
-| :-------------------- | :----------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `quota`               | 0.1429       | Resterende kvote / råderum inden for hastighedsgrænsen [0..1]                                                                                                                                                              |
-| `health`              | 0.1605       | Tilstandsscore fra circuit breaker (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                                                   |
-| `costInv`             | 0.1429       | Omvendt **kombineret** omkostning (60 % input- + 40 % outputtokenpris, normaliseret) — billigere = højere score                                                                                                            |
-| `latencyInv`          | 0.1143       | Omvendt p95-latenstid normaliseret i forhold til puljen — hurtigere = højere score                                                                                                                                         |
-| `taskFit`             | 0.0762       | Egnethed til opgavetypen (kodning, gennemgang, planlægning, analyse, fejlfinding, dokumentation)                                                                                                                           |
-| `stability`           | 0.0476       | Variansbaseret stabilitet ud fra latenstidens standardafvigelse — en kandidat med meget svingende svartider scorer lavere                                                                                                  |
-| `tierPriority`        | 0.0476       | Kontoniveauets prioritet — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                                                    |
-| `tierAffinity`        | 0.0476       | Overensstemmelse mellem kandidatens niveau og det niveau, som manifestet anbefaler                                                                                                                                         |
-| `specificityMatch`    | 0.0476       | Overensstemmelse mellem anmodningens specificitet (tip fra manifestet) og modelniveauet                                                                                                                                    |
-| `contextAffinity`     | 0.0476       | Overensstemmelse mellem anmodningens behov for kontekstvindue og modellens kontekstvindue                                                                                                                                  |
-| `sessionAvailability` | 0.0476       | Tilgængelighed af OAuth-sessionen for kandidatforbindelsen i denne session (`getOAuthSessionAvailability()`; forbindelser uden OAuth scorer 1.0)                                                                           |
-| `connectionDensity`   | 0.0476       | Fordeler belastningen på tværs af forbindelser fra samme udbyder (modvirker koncentration)                                                                                                                                 |
-| `cacheAffinity`       | 0.00         | Rendezvous-hash-tilknytning til den forbindelse, der med størst sandsynlighed allerede indeholder denne anmodnings promptcachepræfiks (`open-sse/services/combo/promptCacheAffinity.ts`); deaktiveret som standard (#8008) |
-| `resetWindowAffinity` | 0.00         | Prioritering af forbindelser, hvis vindue for kvotenulstilling er fordelagtigt (deaktiveret som standard)                                                                                                                  |
-| `quality`             | 0.03         | Feedbackbaseret signal for outputkvalitet fra routinghændelsernes kvalitetssporing; kandidater uden observationer får den neutrale værdi 0.5                                                                               |
-| `reliability`         | 0.00         | Observeret succesandel, `1 - failureRate`, fra 24 timers brugshistorik med et minimum på ti stikprøver (ellers målinger i realtid); kandidater uden observationer aflæses som 1.0. Deaktiveret som standard                |
+| Faktor                | Standardvægt | Beskrivelse                                                                                                                                                                                                              |
+| :-------------------- | :----------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `quota`               | 0.1429       | Resterende kvote / råderum i hastighedsbegrænsningen [0..1]                                                                                                                                                              |
+| `health`              | 0.1605       | Helbredsscore fra circuit breaker (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                                                  |
+| `costInv`             | 0.1429       | Omvendt **blandet** omkostning (60 % input- + 40 % outputtokenpris, normaliseret) — billigere = højere score                                                                                                             |
+| `latencyInv`          | 0.1143       | Omvendt p95-latenstid normaliseret i forhold til puljen — hurtigere = højere score                                                                                                                                       |
+| `taskFit`             | 0.0762       | Egnethed til opgavetypen (kodning, gennemgang, planlægning, analyse, fejlfinding, dokumentation)                                                                                                                         |
+| `stability`           | 0.0476       | Variansbaseret stabilitet ud fra latenstidens standardafvigelse — en kandidat med svingende svartid får en lavere score                                                                                                  |
+| `tierPriority`        | 0.0476       | Kontoniveauets prioritet — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                                                  |
+| `tierAffinity`        | 0.0476       | Affinitet mellem kandidatens niveau og det niveau, som manifestet anbefaler                                                                                                                                              |
+| `specificityMatch`    | 0.0476       | Overensstemmelse mellem anmodningens specificitet (tip fra manifestet) og modelniveauet                                                                                                                                  |
+| `contextAffinity`     | 0.0476       | Affinitet mellem anmodningens behov for kontekstvindue og modellens kontekstvindue                                                                                                                                       |
+| `sessionAvailability` | 0.0476       | Tilgængeligheden af OAuth-sessionen for kandidatforbindelsen i denne session (`getOAuthSessionAvailability()`; forbindelser uden OAuth får scoren 1.0)                                                                   |
+| `connectionDensity`   | 0.0476       | Fordeler belastningen på tværs af forbindelser fra samme udbyder (modvirker koncentration)                                                                                                                               |
+| `cacheAffinity`       | 0.00         | Rendezvous-hash-affinitet mod den forbindelse, der med størst sandsynlighed allerede indeholder denne anmodnings promptcachepræfiks (`open-sse/services/combo/promptCacheAffinity.ts`); deaktiveret som standard (#8008) |
+| `resetWindowAffinity` | 0.00         | Prioritering af forbindelser, hvis vindue for nulstilling af kvoten er fordelagtigt (deaktiveret som standard)                                                                                                           |
+| `quality`             | 0.03         | Feedbackbaseret signal for outputkvalitet fra routinghændelsernes kvalitetssporing; kandidater uden observationer får en neutral score på 0.5                                                                            |
+| `reliability`         | 0.00         | Observeret succesandel, `1 - failureRate`, baseret på 24 timers brugshistorik med et minimum på ti stikprøver (ellers bruges realtidsmålinger); kandidater uden observationer aflæses som 1.0. Deaktiveret som standard  |
 
-**Sum:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0` som erklæret i `DEFAULT_WEIGHTS`; brugerkonfigurerede vægte normaliseres igen til en fordeling af `normalizeScoringWeights()` før beregningen af scoren.
+`quality`-sporingen i hukommelsen (`open-sse/services/routing/quality.ts`) er tom
+efter en kold genstart, så hver kandidat får en neutral score på `0.5`, indtil de
+første observationer registreres.
+
+> **Ulæselig kvote (#15347).** Når en udbyder har en kvotehenter, men den ikke returnerer noget
+> læsbart (mislykket hentning, manglende legitimationsoplysninger, forbrug kun angivet som meddelelse eller et ugyldigt snapshot uden
+> fortolkelige `windows` og uden en endelig `percentUsed`, herunder `percentUsed: null`), får kandidaten
+> scoren `0` på `quota`-aksen, og dens endelige score multipliceres med
+> `UNREADABLE_QUOTA_SOFT_DEPRIORITIZE_FACTOR` (0.5, `autoStrategy.ts`), det samme mønster med en mild
+> straf som straffen for forbindelsesstatus. En mislykket aflæsning af forbrug er evidens om telemetrien,
+> ikke udbyderen, så den rangerer konsekvent lavere end enhver reel aflæsning, herunder en bekræftet
+> aflæsning med 100 % forbrug, men bliver aldrig blokeret eller fjernet helt. En udbyder uden loft rapporterer `unlimited: true` og
+> får score som ved fuld kvote; en udbyder uden en registreret kvotehenter har slet ingen telemetrikilde
+> og beholder standardværdien `100`.
+
+**Sum:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0` som angivet i `DEFAULT_WEIGHTS`; brugerkonfigurerede vægte normaliseres til en fordeling af `normalizeScoringWeights()` før scoreberegningen.
 
 ## Tilstandspakker
 

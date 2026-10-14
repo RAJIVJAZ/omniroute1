@@ -344,19 +344,19 @@ baza de date — se pierd la repornire. _Setările_ sunt persistate; _starea_ bl
 
 ---
 
-## 4. Controlul concurenței pentru Quota-Share (v3.8.36)
+## 4. Controlul concurenței pentru quota-share (v3.8.36)
 
-Conturile cu abonament (GLM, MiniMax etc.) acceptă adesea doar ~1–3 solicitări
-concurente; depășirea acestei limite declanșează răspunsuri 429 și perioade de așteptare. Acest lucru este critic în cazul
-combinațiilor **quota-share** (`qtSd/…`), unde mai multe chei API folosesc în comun același
-cont upstream. Trei niveluri împiedică supraîncărcarea unui cont partajat.
+Conturile cu abonament (GLM, MiniMax etc.) acceptă adesea doar ~1–3 cereri
+concurente; depășirea acestei limite declanșează răspunsuri 429 și perioade de cooldown. Problema este deosebit de acută în cazul
+combinațiilor **quota-share** (`qtSd/…`), în care mai multe chei API partajează același cont
+upstream. Trei niveluri împiedică supraîncărcarea unui cont partajat.
 
 ### Limită de concurență per conexiune (`max_concurrent`)
 
-Fiecare conexiune de furnizor poate declara un plafon `max_concurrent`
-(`provider_connections.max_concurrent`, configurat în fereastra modală a conexiunii / API / DB).
-Lăsați-l necompletat pentru a nu impune nicio limită. Aceasta este setarea unică ce controlează nivelul
-de serializare de mai jos — configurați-o la concurența reală a contului (de exemplu, GLM ~1, MiniMax ~2).
+Fiecare conexiune la un furnizor poate declara un plafon `max_concurrent`
+(`provider_connections.max_concurrent`, configurat în fereastra modală a conexiunii / prin API / în DB).
+Lăsați-l necompletat pentru a nu impune nicio limită. Aceasta este unica setare care controlează nivelul de serializare
+de mai jos — setați-o la concurența reală a contului (de exemplu, GLM ~1, MiniMax ~2).
 
 ### Limite de concurență per model (`modelConcurrency`)
 
@@ -381,54 +381,63 @@ concurență per model**, câte un `model=cap` pe linie) sau prin
   atomic în cadrul aceleiași porți compuse
   (`global → provider → account → model`); comportamentul efectiv este determinat de
   limita aplicabilă mai strictă.
-- **Potrivire exactă a cheii modelului:** cheia este șirul modelului transmis către
-  executor după rezolvarea rutării — în mod normal, ID-ul simplu al modelului upstream
-  (`glm-5`), nu un alias `provider/model` definit de client (`zai/glm-5` nu
-  corespunde cu `glm-5`). Valorile sunt plafoane de solicitări concurente exprimate ca numere întregi pozitive.
-- **Așteptare locală în coadă, fără detectare:** solicitările excedentare așteaptă local în coadă conform
-  semanticii existente pentru coadă/expirare (erori tipizate de admitere `SEMAPHORE_TIMEOUT` /
+- **Potrivire exactă a cheii modelului:** cheia este șirul modelului transmis
+  executorului după rezolvarea rutării — în mod normal, identificatorul simplu al modelului upstream
+  (`glm-5`), nu un alias `provider/model` de partea clientului (`zai/glm-5` nu
+  corespunde cu `glm-5`). Valorile sunt plafoane exprimate prin numere întregi pozitive pentru cererile concurente.
+- **Punere în coadă locală, fără detectare:** cererile excedentare sunt plasate local în coadă conform
+  semanticii existente pentru cozi/expirarea timpului de așteptare (erori tipizate de admitere `SEMAPHORE_TIMEOUT` /
   `SEMAPHORE_QUEUE_FULL`). OmniRoute nu detectează și nu
   deduce politica upstream — aplică exact plafoanele configurate de
   operator. O poartă de model saturată nu dezactivează niciodată furnizorul și nu
-  creează niciodată o blocare permanentă a modelului; comportamentul pentru 429/perioada de așteptare/fallback
-  de la upstream rămâne mecanismul de rezervă pentru erori.
-- **Domeniu per conexiune, per proces:** limitele se aplică per conexiune din baza de date
+  creează niciodată o blocare permanentă a modelului; comportamentul upstream pentru 429/cooldown/fallback
+  rămâne mecanismul de siguranță în caz de eroare.
+- **Domeniu per conexiune, per proces:** limitele sunt definite pentru fiecare conexiune din baza de date
   și sunt păstrate în memorie, astfel încât două conexiuni care reutilizează aceeași cheie API upstream
   nu se coordonează între ele.
 - **Neconfigurat înseamnă neschimbat:** omiterea mapării (sau lăsarea necompletată a
-  câmpului din panoul de control) nu adaugă nicio poartă de model. Exemplu de configurare fără
-  a impune vreo limită universală a furnizorului:
+  câmpului din panoul de control) nu adaugă nicio poartă pentru model. Exemplu de configurație fără
+  a presupune vreo limită universală a furnizorului:
 
 ```text
 glm-5=1
 glm-4.7=3
 ```
 
-### Serializarea solicitărilor Quota-Share
+### Serializarea cererilor quota-share
 
-Când o expediere quota-share vizează o conexiune care declară un
-`max_concurrent` pozitiv, solicitările concurente către acel **cont** sunt serializate printr-un
-semafor per conexiune (cheia `qsconn:<connectionId>`): solicitările excedentare **așteaptă în
-coadă**, în loc să supraîncarce contul. Acesta este de tip **fail-open** — o coadă saturată
-sau o expirare continuă fără obținerea unui slot, în loc să respingă vreodată o solicitare
-care poate fi expediată. Activați sau dezactivați opțiunea în **Setări → Reziliență → Concurență
-per conexiune pentru Quota-Share** (`resilienceSettings.quotaShareConcurrencyLimit.enabled`, activată
-implicit). Fără un plafon `max_concurrent`, comportamentul rămâne neschimbat.
+Când o distribuire quota-share vizează o conexiune care declară o valoare pozitivă
+`max_concurrent`, cererile concurente către acel **cont** sunt serializate printr-un
+semafor per conexiune (cheia `qsconn:<connectionId>`): cererile excedentare **așteaptă în
+coadă**, în loc să supraîncarce contul. Mecanismul este **fail-open** — o coadă saturată
+sau expirarea timpului de așteptare permite continuarea fără un slot, în loc să respingă vreodată o cerere
+care poate fi distribuită. Activați sau dezactivați în **Setări → Reziliență → Concurență per conexiune
+pentru quota-share** (`resilienceSettings.quotaShareConcurrencyLimit.enabled`, activată
+implicit). În absența unui plafon `max_concurrent`, comportamentul rămâne neschimbat.
 
 > Poarta de rutare quota-share (`selectQuotaShareTarget`, DRR + P2C) este ea însăși
-> de tip fail-open și doar _reduce prioritatea_ unei conexiuni care și-a atins limita — într-un
-> grup cu o singură conexiune, aceasta nu poate impune strict limita, astfel încât acest semafor este cel care
+> fail-open și doar _reduce prioritatea_ unei conexiuni care și-a atins plafonul — într-un
+> grup cu o singură conexiune, aceasta nu poate impune o limită strictă, așadar acest semafor este cel care
 > limitează efectiv afluxul.
 
-### Reîncercare adaptată la perioada de așteptare pentru combinații
+### Reîncercare pentru combinații, conștientă de cooldown
 
-Pentru fiecare strategie de combinație (când este activată), o solicitare care ar concretiza un răspuns 429
-pentru o perioadă de așteptare tranzitorie SCURTĂ așteaptă încheierea acesteia și este reexpediată, în loc să
-returneze răspunsul 429 — aceasta acoperă ferestrele TPM/RPM din clasa Gemini (~60s retry-after)
-pentru combinațiile cu mai multe modele, de exemplu atunci când ambele ținte ale unei combinații cu 2 modele ating o limită de rată
-per model. Este limitată de `comboCooldownWait` (`enabled`, `maxWaitMs`, `maxAttempts`,
+Pentru fiecare strategie de combinație (când este activată), o cerere care ar concretiza un răspuns 429
+din cauza unui cooldown tranzitoriu SCURT așteaptă încheierea acestuia și este redistribuită, în loc să
+returneze răspunsul 429 — aceasta acoperă ferestrele TPM/RPM de tip Gemini (~60s retry-after)
+pentru combinațiile cu mai multe modele, de exemplu atunci când ambele ținte ale unei combinații cu 2 modele
+ating o limită de rată per model. Comportamentul este limitat de `comboCooldownWait` (`enabled`, `maxWaitMs`, `maxAttempts`,
 `budgetMs`) în **Setări → Reziliență**. Nu așteaptă niciodată pentru `quota_exhausted`
 (blocat până la miezul nopții) sau din motive de autentificare/resursă negăsită.
+
+Aceeași poartă acoperă cazul anterior distribuirii (#16319): când fiecare țintă a unei
+combinații este omisă înainte de efectuarea vreunei încercări deoarece modelul său se află într-o
+blocare tranzitorie scurtă, calea cu zero încercări așteaptă încheierea blocării în aceleași
+limite și redistribuie cererea, în loc să răspundă cu un
+`503 ALL_TARGETS_SKIPPED` fără indicații. Când așteptarea nu este permisă (plafonul, numărul de încercări sau bugetul
+au fost epuizate ori funcționalitatea este dezactivată), răspunsul terminal este actualizat la
+`429 rate_limit_error`, incluzând `retry_after` / `reset_at` de la cea mai apropiată
+expirare a unei blocări tranzitorii; blocările pentru cotă, autentificare și resursă negăsită păstrează răspunsul 503 fără indicații.
 
 ---
 

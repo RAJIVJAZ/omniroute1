@@ -341,23 +341,23 @@ bloqueios ativos é efémero.
 
 ---
 
-## 4. Controlo de concorrência de partilha de quota (v3.8.36)
+## 4. Controlo de concorrência de quota partilhada (v3.8.36)
 
-As contas de subscrição (GLM, MiniMax, etc.) aceitam frequentemente apenas ~1–3 pedidos
-simultâneos; exceder esse limite provoca erros 429 e períodos de espera. Isto é particularmente problemático em
-combinações de **partilha de quota** (`qtSd/…`), nas quais várias chaves de API partilham uma única conta
-a montante. Três camadas impedem que uma conta partilhada seja sobrecarregada.
+As contas de subscrição (GLM, MiniMax, etc.) aceitam frequentemente apenas ~1–3
+pedidos simultâneos; exceder esse limite desencadeia erros 429 e períodos de espera. Isto é particularmente problemático em
+combinações de **quota partilhada** (`qtSd/…`), nas quais várias chaves de API partilham uma única conta
+a montante. Três camadas impedem que uma conta partilhada seja inundada.
 
 ### Limite de concorrência por ligação (`max_concurrent`)
 
 Cada ligação de fornecedor pode declarar um limite máximo `max_concurrent`
-(`provider_connections.max_concurrent`, definido na janela modal da ligação/API/BD).
-Deixe-o vazio para não aplicar qualquer limite. Este é o único parâmetro que controla a camada
-de serialização abaixo — defina-o para a concorrência real da conta (por exemplo, GLM ~1, MiniMax ~2).
+(`provider_connections.max_concurrent`, definido na janela da ligação / API / BD).
+Deixe-o vazio para não aplicar qualquer limite. Este é o parâmetro único que controla a camada de serialização
+abaixo — defina-o de acordo com a concorrência real da conta (por exemplo, GLM ~1, MiniMax ~2).
 
 ### Limites de concorrência por modelo (`modelConcurrency`)
 
-Uma ligação pode, adicionalmente, declarar limites máximos exatos de concorrência por modelo
+Uma ligação pode também declarar limites máximos exatos de concorrência por modelo
 no respetivo mapa `rateLimitOverrides`:
 
 ```json
@@ -369,63 +369,72 @@ no respetivo mapa `rateLimitOverrides`:
 }
 ```
 
-Defina-os na janela modal da ligação (**Substituições de limites de taxa → Limites de
+Defina-o na janela da ligação (**Substituições de limites de taxa → Limites de
 concorrência por modelo**, um `model=cap` por linha) ou através de
 `PATCH /api/providers/[id]` com a mesma estrutura JSON. Semântica das chaves:
 
-- **Ao nível da ligação vs. específico do modelo:** `maxConcurrent` continua a ser o limite
-  partilhado ao nível da ligação. Quando ambos se aplicam, ambos os controlos são adquiridos
-  de forma atómica no mesmo controlo composto
+- **Ao nível da ligação vs. específico do modelo:** `maxConcurrent` continua a ser o limite máximo
+  partilhado ao nível da ligação. Quando ambos se aplicam, ambos os mecanismos de controlo são adquiridos
+  atomicamente no mesmo mecanismo composto
   (`global → provider → account → model`); o comportamento efetivo corresponde ao
   limite aplicável mais restritivo.
 - **Correspondência exata da chave do modelo:** a chave é a cadeia do modelo transmitida ao
   executor após a resolução do encaminhamento — normalmente, o ID simples do modelo a montante
   (`glm-5`), e não um alias `provider/model` do lado do cliente (`zai/glm-5` não
   corresponde a `glm-5`). Os valores são limites máximos de pedidos simultâneos expressos como números inteiros positivos.
-- **Colocação em fila local, sem deteção:** os pedidos excedentários são colocados numa fila local com a
-  semântica existente de fila/tempo limite (erros de admissão tipificados `SEMAPHORE_TIMEOUT` /
+- **Fila local, sem deteção:** os pedidos em excesso aguardam localmente na fila de acordo com a
+  semântica existente de fila/tempo limite (erros de admissão tipados `SEMAPHORE_TIMEOUT` /
   `SEMAPHORE_QUEUE_FULL`). O OmniRoute não deteta nem
-  infere a política a montante — aplica os limites exatos configurados pelo operador.
-  Um controlo de modelo saturado nunca desativa o fornecedor nem
-  cria um bloqueio permanente do modelo; o comportamento de 429/período de espera/alternativa
-  a montante continua a funcionar como mecanismo de recurso em caso de erro.
+  infere a política a montante — aplica os limites máximos exatos configurados pelo
+  operador. Um mecanismo de controlo de modelo saturado nunca desativa o fornecedor nem
+  cria um bloqueio permanente do modelo; o comportamento de erro a montante relativo a erros 429/períodos de espera/mecanismos alternativos
+  continua a funcionar como salvaguarda contra erros.
 - **Âmbito por ligação e por processo:** os limites aplicam-se por ligação da base de dados
   e são mantidos em memória, pelo que duas ligações que reutilizem a mesma chave de API a montante
   não se coordenam entre si.
-- **Não configurado significa inalterado:** omitir o mapa (ou deixar o
-  campo do painel em branco) não adiciona qualquer controlo de modelo. Exemplo de configuração sem
-  impor qualquer limite universal do fornecedor:
+- **Não configurado significa sem alterações:** omitir o mapa (ou deixar o
+  campo do painel em branco) não adiciona qualquer mecanismo de controlo do modelo. Exemplo de configuração sem
+  pressupor qualquer limite universal do fornecedor:
 
 ```text
 glm-5=1
 glm-4.7=3
 ```
 
-### Serialização de pedidos de partilha de quota
+### Serialização de pedidos de quota partilhada
 
-Quando um envio de partilha de quota tem como destino uma ligação que declara um
+Quando uma expedição de quota partilhada tem como destino uma ligação que declara um valor
 `max_concurrent` positivo, os pedidos simultâneos para essa **conta** são serializados através de um
-semáforo por ligação (chave `qsconn:<connectionId>`): os pedidos excedentários **aguardam na
-fila** em vez de sobrecarregarem a conta. O comportamento é de **abertura em caso de falha** — uma
-fila saturada ou um tempo limite excedido faz com que o pedido prossiga sem uma vaga, em vez de rejeitar
-um pedido que possa ser enviado. Ative ou desative esta opção em **Definições → Resiliência → Concorrência
-por ligação de partilha de quota** (`resilienceSettings.quotaShareConcurrencyLimit.enabled`, ativa
+semáforo por ligação (chave `qsconn:<connectionId>`): os pedidos em excesso **aguardam na
+fila**, em vez de inundarem a conta. O mecanismo é **fail-open** — uma fila saturada
+ou um tempo limite esgotado permite que o pedido prossiga sem uma vaga, em vez de rejeitar um pedido
+que possa ser expedido. Ative ou desative esta opção em **Definições → Resiliência → Concorrência por ligação
+de quota partilhada** (`resilienceSettings.quotaShareConcurrencyLimit.enabled`, ativada
 por predefinição). Sem um limite `max_concurrent`, o comportamento permanece inalterado.
 
-> O controlo de encaminhamento da partilha de quota (`selectQuotaShareTarget`, DRR + P2C) também é
-> de abertura em caso de falha e apenas atribui _menor prioridade_ a uma ligação que tenha atingido o limite — com um
-> conjunto de uma única ligação, não pode impor um limite rígido, pelo que é este semáforo que efetivamente
-> contém a sobrecarga.
+> O mecanismo de controlo do encaminhamento de quota partilhada (`selectQuotaShareTarget`, DRR + P2C) é, por si só,
+> fail-open e apenas atribui _menor prioridade_ a uma ligação que tenha atingido o limite — com um
+> conjunto de uma única ligação, não pode impor um limite estrito, pelo que é este semáforo que efetivamente
+> contém a inundação.
 
 ### Nova tentativa sensível ao período de espera da combinação
 
-Para todas as estratégias de combinação (quando ativadas), um pedido que consolidaria um erro 429
-devido a um período de espera transitório CURTO aguarda até que este termine e volta a ser enviado, em vez de
-devolver o erro 429 — isto abrange janelas TPM/RPM da classe Gemini (~60 s de retry-after)
-em combinações de vários modelos, por exemplo, quando ambos os destinos de uma combinação de 2 modelos
-atingem um limite de taxa por modelo. É limitado por `comboCooldownWait` (`enabled`, `maxWaitMs`, `maxAttempts`,
+Para todas as estratégias de combinação (quando ativadas), um pedido que faria concretizar um erro 429
+por um período de espera transitório CURTO aguarda até este terminar e é novamente expedido, em vez de
+devolver o erro 429 — isto abrange janelas TPM/RPM da classe Gemini (~60 s de `retry-after`)
+em combinações de vários modelos, por exemplo, quando ambos os destinos de uma combinação de 2 modelos atingem um limite de taxa
+por modelo. Limitado por `comboCooldownWait` (`enabled`, `maxWaitMs`, `maxAttempts`,
 `budgetMs`) em **Definições → Resiliência**. Nunca aguarda por `quota_exhausted`
 (bloqueado até à meia-noite) nem por motivos de autenticação/não encontrado.
+
+O mesmo mecanismo abrange o caso anterior à expedição (#16319): quando todos os destinos de uma
+combinação são ignorados antes de qualquer tentativa porque o respetivo modelo está sujeito a um
+bloqueio transitório curto, o caminho de zero tentativas aguarda que o bloqueio termine, sujeito aos mesmos
+limites máximos, e volta a expedir o pedido, em vez de responder com um
+`503 ALL_TARGETS_SKIPPED` sem indicação. Quando não é permitido aguardar (limite máximo, tentativas ou orçamento
+esgotados, ou funcionalidade desativada), a resposta final é atualizada para
+`429 rate_limit_error`, contendo `retry_after` / `reset_at` da expiração
+mais próxima de um bloqueio transitório; os bloqueios de quota, autenticação e não encontrado mantêm a resposta 503 sem indicação.
 
 ---
 

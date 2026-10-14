@@ -361,8 +361,8 @@ aktif bersifat sementara.
 
 ## 4. Kawalan Keserentakan Perkongsian Kuota (v3.8.36)
 
-Akaun langganan (GLM, MiniMax, dll.) selalunya hanya menerima ~1–3 permintaan
-serentak; melebihi had tersebut akan mencetuskan ralat 429 dan tempoh bertenang. Hal ini menjadi lebih kritikal dalam
+Akaun langganan (GLM, MiniMax, dsb.) selalunya hanya menerima ~1–3 permintaan
+serentak; melebihi had tersebut akan mencetuskan ralat 429 dan tempoh bertenang. Hal ini ketara dalam
 gabungan **perkongsian kuota** (`qtSd/…`), apabila beberapa kunci API berkongsi satu akaun
 huluan. Tiga lapisan menghalang akaun yang dikongsi daripada dibanjiri permintaan.
 
@@ -370,12 +370,12 @@ huluan. Tiga lapisan menghalang akaun yang dikongsi daripada dibanjiri permintaa
 
 Setiap sambungan penyedia boleh menetapkan had maksimum `max_concurrent`
 (`provider_connections.max_concurrent`, ditetapkan dalam modal sambungan / API / DB).
-Biarkannya kosong jika tiada had. Ini ialah tetapan tunggal yang mengawal lapisan
-pensirian di bawah — tetapkan kepada keserentakan sebenar akaun (cth. GLM ~1, MiniMax ~2).
+Biarkan kosong untuk tiada had. Ini ialah tetapan tunggal yang mengawal lapisan
+pensirian di bawah — tetapkannya kepada keserentakan sebenar akaun (cth. GLM ~1, MiniMax ~2).
 
 ### Had keserentakan setiap model (`modelConcurrency`)
 
-Sambungan juga boleh menetapkan had keserentakan tepat bagi setiap model
+Sambungan juga boleh menetapkan had maksimum keserentakan tepat bagi setiap model
 dalam peta `rateLimitOverrides`:
 
 ```json
@@ -389,27 +389,27 @@ dalam peta `rateLimitOverrides`:
 
 Tetapkannya dalam modal sambungan (**Penggantian had kadar → Had keserentakan
 setiap model**, satu `model=cap` bagi setiap baris) atau melalui
-`PATCH /api/providers/[id]` dengan bentuk JSON yang sama. Semantik utama:
+`PATCH /api/providers/[id]` dengan struktur JSON yang sama. Semantik utama:
 
-- **Seluruh sambungan berbanding khusus model:** `maxConcurrent` kekal sebagai
-  had seluruh sambungan yang dikongsi. Apabila kedua-duanya terpakai, kedua-dua gerbang diperoleh
+- **Seluruh sambungan berbanding khusus model:** `maxConcurrent` kekal sebagai had maksimum
+  seluruh sambungan yang dikongsi. Apabila kedua-duanya terpakai, kedua-dua gerbang diperoleh
   secara atomik dalam gerbang komposit yang sama
-  (`global → provider → account → model`); tingkah laku efektif mematuhi
+  (`global → provider → account → model`); tingkah laku efektif mengikut
   had terpakai yang lebih ketat.
-- **Padanan tepat kunci model:** kuncinya ialah rentetan model yang dihantar kepada
-  pelaksana selepas penyelesaian penghalaan — biasanya ID model huluan sahaja
+- **Padanan tepat kunci model:** kunci ialah rentetan model yang dihantar kepada
+  pelaksana selepas penyelesaian penghalaan — biasanya ID model huluan biasa
   (`glm-5`), bukan alias `provider/model` pada sisi klien (`zai/glm-5` tidak
-  sepadan dengan `glm-5`). Nilai ialah had bilangan permintaan serentak dalam bentuk integer positif.
-- **Giliran setempat, tanpa penemuan:** permintaan berlebihan beratur secara setempat mengikut
-  semantik giliran/masa tamat sedia ada (ralat kemasukan berjenis `SEMAPHORE_TIMEOUT` /
+  sepadan dengan `glm-5`). Nilai ialah had maksimum permintaan serentak dalam bentuk integer positif.
+- **Baris gilir setempat, tiada penemuan:** permintaan berlebihan beratur secara setempat mengikut
+  semantik baris gilir/tamat masa sedia ada (ralat kemasukan berjenis `SEMAPHORE_TIMEOUT` /
   `SEMAPHORE_QUEUE_FULL`). OmniRoute tidak menemui atau
-  menyimpulkan dasar huluan — ia menguatkuasakan had tepat yang
+  membuat inferens tentang dasar huluan — ia menguatkuasakan had tepat yang
   dikonfigurasikan oleh pengendali. Gerbang model yang tepu tidak pernah menyahdayakan penyedia dan tidak pernah
-  mewujudkan sekatan kekal terhadap model; tingkah laku 429/tempoh bertenang/fallback huluan
-  kekal sebagai perlindungan terakhir terhadap ralat.
-- **Skop setiap sambungan, setiap proses:** had adalah bagi setiap sambungan pangkalan data
-  dan disimpan dalam memori, maka dua sambungan yang menggunakan semula kunci API huluan yang sama
-  tidak menyelaras antara satu sama lain.
+  mewujudkan sekatan kekal model; tingkah laku 429/tempoh bertenang/sandar balik huluan
+  kekal sebagai perlindungan terakhir bagi ralat.
+- **Skop setiap sambungan, setiap proses:** had dikenakan bagi setiap sambungan pangkalan data
+  dan disimpan dalam memori, jadi dua sambungan yang menggunakan semula kunci API huluan yang sama
+  tidak diselaraskan antara satu sama lain.
 - **Tidak dikonfigurasikan bermaksud tiada perubahan:** mengabaikan peta tersebut (atau membiarkan
   medan papan pemuka kosong) tidak menambahkan gerbang model. Contoh konfigurasi tanpa
   menetapkan sebarang had penyedia sejagat:
@@ -424,26 +424,35 @@ glm-4.7=3
 Apabila penghantaran perkongsian kuota menyasarkan sambungan yang menetapkan nilai positif
 `max_concurrent`, permintaan serentak kepada **akaun** tersebut disirikan melalui
 semafor setiap sambungan (kunci `qsconn:<connectionId>`): permintaan berlebihan **menunggu dalam
-giliran** dan bukannya membanjiri akaun. Mekanisme ini bersifat **fail-open** — giliran yang tepu
-atau masa tamat akan meneruskan proses tanpa slot dan bukannya menolak permintaan yang boleh
-dihantar. Togol dalam **Tetapan → Ketahanan → Keserentakan setiap sambungan
-perkongsian kuota** (`resilienceSettings.quotaShareConcurrencyLimit.enabled`, didayakan
+baris gilir** dan bukannya membanjiri akaun. Ia bersifat **gagal-terbuka** — baris gilir yang tepu
+atau tamat masa akan diteruskan tanpa slot dan tidak akan sekali-kali menolak permintaan
+yang boleh dihantar. Togol dalam **Tetapan → Ketahanan → Keserentakan setiap sambungan
+perkongsian kuota** (`resilienceSettings.quotaShareConcurrencyLimit.enabled`, dihidupkan
 secara lalai). Tanpa had `max_concurrent`, tingkah laku kekal tidak berubah.
 
 > Gerbang penghalaan perkongsian kuota (`selectQuotaShareTarget`, DRR + P2C) itu sendiri
-> bersifat fail-open dan hanya _menurunkan keutamaan_ sambungan yang telah mencapai had — dengan
-> kelompok satu sambungan, ia tidak boleh mengehadkan secara tegas, maka semafor inilah yang benar-benar
-> membendung limpahan permintaan.
+> bersifat gagal-terbuka dan hanya _menurunkan keutamaan_ sambungan yang telah mencapai had — dengan
+> kumpulan satu sambungan, ia tidak boleh mengehadkan secara tegar, maka semafor inilah yang sebenarnya
+> membendung limpahan tersebut.
 
-### Percubaan semula gabungan yang menyedari tempoh bertenang
+### Percubaan semula gabungan yang peka terhadap tempoh bertenang
 
-Bagi setiap strategi gabungan (apabila didayakan), permintaan yang akan memuktamadkan ralat 429
-untuk tempoh bertenang sementara yang PENDEK akan menunggu sehingga tempoh itu tamat dan dihantar semula, bukannya
-mengembalikan ralat 429 — ini merangkumi tetingkap TPM/RPM kelas Gemini (~60s retry-after)
-pada gabungan berbilang model, contohnya kedua-dua sasaran bagi gabungan 2 model mencapai had kadar
-setiap model. Dibataskan oleh `comboCooldownWait` (`enabled`, `maxWaitMs`, `maxAttempts`,
-`budgetMs`) dalam **Tetapan → Ketahanan**. Ia tidak pernah menunggu untuk `quota_exhausted`
+Bagi setiap strategi gabungan (apabila didayakan), permintaan yang bakal memuktamadkan ralat 429
+untuk tempoh bertenang sementara yang PENDEK akan menunggu sehingga tempoh tersebut tamat dan dihantar semula,
+dan bukannya mengembalikan ralat 429 — ini merangkumi tetingkap TPM/RPM kelas Gemini
+(~60s retry-after) pada gabungan berbilang model, contohnya kedua-dua sasaran bagi gabungan 2 model
+mencapai had kadar setiap model. Dibataskan oleh `comboCooldownWait` (`enabled`, `maxWaitMs`, `maxAttempts`,
+`budgetMs`) dalam **Tetapan → Ketahanan**. Ia tidak pernah menunggu bagi `quota_exhausted`
 (dikunci sehingga tengah malam) atau sebab pengesahan/tidak ditemui.
+
+Gerbang yang sama meliputi kes sebelum penghantaran (#16319): apabila setiap sasaran bagi
+sesuatu gabungan dilangkau sebelum sebarang percubaan dibuat kerana modelnya berada dalam
+sekatan sementara yang singkat, laluan tanpa percubaan menunggu sehingga sekatan tamat di bawah
+had yang sama dan menghantar semula, dan bukannya membalas dengan
+`503 ALL_TARGETS_SKIPPED` tanpa petunjuk. Apabila penantian tidak dibenarkan (had maksimum, had percubaan atau belanjawan
+telah habis, atau ciri dimatikan), respons muktamad dinaik taraf kepada
+`429 rate_limit_error` yang membawa `retry_after` / `reset_at` daripada tamat tempoh
+sekatan sementara yang paling awal; sekatan kuota, pengesahan dan tidak ditemui mengekalkan respons 503 tanpa petunjuk.
 
 ---
 

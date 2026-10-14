@@ -186,34 +186,49 @@ Dvě časté nástrahy:
 
 Původní nejasnosti, které tato dokumentace objasňuje, naleznete v [#7992](https://github.com/diegosouzapw/OmniRoute/issues/7992) a [#7111](https://github.com/diegosouzapw/OmniRoute/issues/7111).
 
-## Jak to funguje (trvalé automatické kombinace)
+## Jak to funguje (perzistentní automatické kombinace)
 
-Modul Auto-Combo dynamicky vybírá nejlepšího poskytovatele/model pro každý požadavek pomocí **16faktorové bodovací funkce** (definované v `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). Výchozí váhy mají součet `1.0`; vlastní váhy jsou znovu normalizovány pomocí `normalizeScoringWeights()`. Dva ze šestnácti faktorů — `cacheAffinity` a `resetWindowAffinity` — mají výchozí váhu `0`; faktor `reliability` má v `DEFAULT_WEIGHTS` váhu `0`, ale v obecných sadách `0.03` a v sadě `reliability-first` hodnotu `0.04`, zatímco faktor `quality` má v sadách váhu `0.02` (v sadě `quality-first` hodnotu `0.03`): přesto se počítají pro každého kandidáta a `cacheAffinity` mimo výsledné skóre řídí deduplikaci mezipaměti promptů, takže faktory s nulovou výchozí váhou se ve výchozím nastavení jednoduše nezapojují do rozhodování, zatímco v sadách ano.
+Modul Auto-Combo dynamicky vybírá nejlepšího poskytovatele/model pro každý požadavek pomocí **16faktorové skórovací funkce** (definované v `open-sse/services/autoCombo/scoring.ts` → `DEFAULT_WEIGHTS`). Součet výchozích vah je `1.0`; vlastní váhy jsou znovu normalizovány funkcí `normalizeScoringWeights()`. Dva ze šestnácti faktorů — `cacheAffinity` a `resetWindowAffinity` — mají výchozí váhu `0`; faktor `reliability` má v `DEFAULT_WEIGHTS` váhu `0`, ale v obecných sadách `0.03` a v sadě `reliability-first` hodnotu `0.04`, zatímco faktor `quality` má v sadách váhu `0.02` (v sadě `quality-first` hodnotu `0.03`): přesto se počítají pro každého kandidáta a `cacheAffinity` řídí deduplikaci mezipaměti promptů mimo skóre, takže faktory s nulovou výchozí vahou ve výchozím nastavení jednoduše neovlivňují rozhodování, zatímco v sadách se uplatňují.
 
-![16faktorové bodování Auto-Combo](../diagrams/exported/auto-combo-scoring.svg)
+![16faktorové skórování Auto-Combo](../diagrams/exported/auto-combo-scoring.svg)
 
 > Zdroj: [diagrams/auto-combo-scoring.mmd](../diagrams/auto-combo-scoring.mmd) (znovu vygenerujte pomocí `npm run docs:render-diagrams`). Název souboru je historický; zdrojový i vykreslený diagram zobrazují všech 16 faktorů deklarovaných v `DEFAULT_WEIGHTS`.
 
 | Faktor                | Výchozí váha | Popis                                                                                                                                                                                                                                            |
 | :-------------------- | :----------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `quota`               | 0.1429       | Zbývající kvóta / rezerva limitu požadavků [0..1]                                                                                                                                                                                                |
+| `quota`               | 0.1429       | Zbývající kvóta / rezerva limitu rychlosti [0..1]                                                                                                                                                                                                |
 | `health`              | 0.1605       | Skóre stavu z jističe (CLOSED=1.0, HALF_OPEN=0.5, OPEN=0.0)                                                                                                                                                                                      |
-| `costInv`             | 0.1429       | Převrácená hodnota **kombinovaných** nákladů (60 % ceny vstupních + 40 % ceny výstupních tokenů, normalizováno) — nižší cena = vyšší skóre                                                                                                       |
-| `latencyInv`          | 0.1143       | Převrácená hodnota latence p95 normalizovaná podle fondu — vyšší rychlost = vyšší skóre                                                                                                                                                          |
-| `taskFit`             | 0.0762       | Vhodnost pro typ úlohy (programování, revize, plánování, analýza, ladění, dokumentace)                                                                                                                                                           |
-| `stability`           | 0.0476       | Stabilita založená na varianci směrodatné odchylky latence — kandidátovi s kolísající dobou odezvy je přiděleno nižší skóre                                                                                                                      |
+| `costInv`             | 0.1429       | Inverzní **kombinované** náklady (60 % cena vstupních + 40 % cena výstupních tokenů, normalizováno) — levnější = vyšší skóre                                                                                                                     |
+| `latencyInv`          | 0.1143       | Inverzní latence p95 normalizovaná vzhledem k fondu — rychlejší = vyšší skóre                                                                                                                                                                    |
+| `taskFit`             | 0.0762       | Vhodnost pro daný typ úlohy (programování, kontrola, plánování, analýza, ladění, dokumentace)                                                                                                                                                    |
+| `stability`           | 0.0476       | Stabilita založená na rozptylu směrodatné odchylky latence — kandidát s kolísající dobou odezvy získá nižší skóre                                                                                                                                |
 | `tierPriority`        | 0.0476       | Priorita úrovně účtu — Ultra=1.0, Pro=0.67, Standard=0.33, Free=0.0                                                                                                                                                                              |
 | `tierAffinity`        | 0.0476       | Afinita mezi úrovní kandidáta a úrovní doporučenou manifestem                                                                                                                                                                                    |
-| `specificityMatch`    | 0.0476       | Shoda mezi specifičností požadavku (nápovědou manifestu) a úrovní modelu                                                                                                                                                                         |
-| `contextAffinity`     | 0.0476       | Afinita mezi požadovanou velikostí kontextového okna a kontextovým oknem modelu                                                                                                                                                                  |
+| `specificityMatch`    | 0.0476       | Shoda mezi specifičností požadavku (nápověda manifestu) a úrovní modelu                                                                                                                                                                          |
+| `contextAffinity`     | 0.0476       | Afinita mezi požadavkem na velikost kontextového okna a kontextovým oknem modelu                                                                                                                                                                 |
 | `sessionAvailability` | 0.0476       | Dostupnost relace OAuth kandidátního připojení pro tuto relaci (`getOAuthSessionAvailability()`; připojení bez OAuth získávají skóre 1.0)                                                                                                        |
-| `connectionDensity`   | 0.0476       | Rozkládá zatížení mezi připojení stejného poskytovatele (zamezení koncentraci)                                                                                                                                                                   |
-| `cacheAffinity`       | 0.00         | Afinita založená na rendezvous hashování směrem k připojení, které již s největší pravděpodobností uchovává prefix mezipaměti promptu tohoto požadavku (`open-sse/services/combo/promptCacheAffinity.ts`); ve výchozím nastavení vypnuto (#8008) |
-| `resetWindowAffinity` | 0.00         | Upřednostnění připojení, jejichž časové okno obnovení kvóty je výhodné (ve výchozím nastavení vypnuto)                                                                                                                                           |
+| `connectionDensity`   | 0.0476       | Rozkládá zátěž mezi připojení stejného poskytovatele (zamezení koncentraci)                                                                                                                                                                      |
+| `cacheAffinity`       | 0.00         | Afinita založená na rendezvous hashování směrem k připojení, které již s největší pravděpodobností obsahuje prefix mezipaměti promptu tohoto požadavku (`open-sse/services/combo/promptCacheAffinity.ts`); ve výchozím nastavení vypnuto (#8008) |
+| `resetWindowAffinity` | 0.00         | Upřednostnění připojení s výhodným časovým oknem pro obnovení kvóty (ve výchozím nastavení vypnuto)                                                                                                                                              |
 | `quality`             | 0.03         | Signál kvality výstupu řízený zpětnou vazbou ze sledování kvality událostí směrování; kandidáti bez pozorování obdrží neutrální hodnotu 0.5                                                                                                      |
-| `reliability`         | 0.00         | Pozorovaný podíl úspěšnosti, `1 - failureRate`, z historie využití za 24 hodin s minimálním limitem deseti vzorků (jinak metriky v reálném čase); kandidáti bez pozorování mají hodnotu 1.0. Ve výchozím nastavení vypnuto                       |
+| `reliability`         | 0.00         | Pozorovaný podíl úspěchů, `1 - failureRate`, z 24hodinové historie využití s minimem deseti vzorků (jinak se použijí metriky v reálném čase); kandidáti bez pozorování mají hodnotu 1.0. Ve výchozím nastavení vypnuto                           |
 
-**Součet:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0`, jak je deklarováno v `DEFAULT_WEIGHTS`; uživatelem nakonfigurované váhy jsou před bodováním pomocí `normalizeScoringWeights()` znovu normalizovány na rozdělení.
+Sledování `quality` v paměti (`open-sse/services/routing/quality.ts`) je po
+studeném restartu prázdné, takže každý kandidát získává neutrální skóre `0.5`,
+dokud nejsou zaznamenána první pozorování.
+
+> **Nečitelná kvóta (#15347).** Pokud má poskytovatel načítač kvóty, ale ten nevrátí nic
+> čitelného (načtení se nezdařilo, chybí přihlašovací údaje, využití obsahuje pouze zprávu nebo má snímek chybný formát bez
+> analyzovatelných `windows` a bez konečné hodnoty `percentUsed`, včetně `percentUsed: null`), kandidát
+> získá na ose `quota` skóre `0` a jeho výsledné skóre se vynásobí
+> koeficientem `UNREADABLE_QUOTA_SOFT_DEPRIORITIZE_FACTOR` (0.5, `autoStrategy.ts`), tedy stejným vzorem mírné penalizace
+> jako u penalizace za stav připojení. Neúspěšné načtení využití vypovídá o telemetrii,
+> nikoli o poskytovateli, takže je hodnoceno striktně níže než jakákoli skutečná naměřená hodnota, včetně potvrzeného
+> 100% využití, ale nikdy není zcela zablokováno ani vyřazeno. Poskytovatel bez omezení hlásí `unlimited: true` a
+> získá skóre jako při plné kvótě; poskytovatel bez registrovaného načítače kvóty nemá vůbec žádný zdroj telemetrie
+> a zachová si výchozí hodnotu `100`.
+
+**Součet:** `0.1429 + 0.1605 + 0.1429 + 0.1143 + 0.0762 + (7 × 0.0476) + 0.00 + 0.00 + 0.03 + 0.00 = 1.0`, jak je deklarováno v `DEFAULT_WEIGHTS`; uživatelsky nakonfigurované váhy jsou před výpočtem skóre renormalizovány na rozdělení pomocí `normalizeScoringWeights()`.
 
 ## Balíčky režimů
 
